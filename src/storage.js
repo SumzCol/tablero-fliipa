@@ -1,4 +1,11 @@
 const API = `${import.meta.env.BASE_URL || "/"}api/board`.replace(/\/{2,}/g, "/");
+const BOARD_WRITE_KEY = (import.meta.env.VITE_FLIIPA_BOARD_WRITE_KEY || "").trim();
+
+function boardWriteHeaders(extra) {
+  const headers = { ...(extra || {}) };
+  if (BOARD_WRITE_KEY) headers["X-Fliipa-Board-Key"] = BOARD_WRITE_KEY;
+  return headers;
+}
 const BOX = "https://extendsclass.com/api/json-storage/bin";
 const KV_APP = "x0as3in0";
 const KV_KEY = "fliipa-board";
@@ -31,8 +38,20 @@ function invalidateBoardCache() {
   fetchedAt = 0;
 }
 
+function isHostedBoardWithApi() {
+  if (typeof window === "undefined") return false;
+  const host = window.location?.hostname || "";
+  return (
+    host.endsWith(".run.app") ||
+    host.endsWith(".fliipa.com") ||
+    host.endsWith(".web.app") ||
+    host.endsWith(".firebaseapp.com")
+  );
+}
+
 function shouldUseLocalFallback() {
   if (typeof window === "undefined") return false;
+  if (isHostedBoardWithApi()) return false;
   const host = window.location && window.location.hostname ? window.location.hostname : "";
   return /github\.io|localhost|127\.0\.0\.1|192\.168\.|10\.\d+\.\d+\.\d+/.test(host);
 }
@@ -201,7 +220,10 @@ async function putBoard(data) {
       invalidateBoardCache();
       const res = await fetch(API, {
         method: "PUT",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        headers: boardWriteHeaders({
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        }),
         body: JSON.stringify(data),
         cache: "no-store",
       });

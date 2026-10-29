@@ -2,6 +2,13 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import KaneoMigrateModal from "./KaneoMigrateModal";
 import { mergeImportedInitiatives, parseImportedBoard } from "./importLegacy";
 import { foldName, resolvePersonNick } from "./plane";
+import { MINIMAL_PAGE_BG } from "./uiMode";
+import MinimalFilterAccordion from "./MinimalFilterAccordion";
+import { taskMatchesMinimalFilterRoot } from "./minimalFilters";
+import { minimalFilterDemoTasks } from "./minimalFilterDemoData";
+import { isLocalDevEnvironment } from "./env";
+import TaskNotesField, { CopyableTaskIdRow } from "./TaskNotesField.jsx";
+import MermaidWizardModal from "./MermaidWizardModal.jsx";
 
 // ---- Design tokens ----
 // Two palettes so the dark-mode toggle in the top bar actually re-themes
@@ -51,6 +58,231 @@ const TASK_TYPES = {
   Mejora: { color: "#B48EDE", label: "Mejora" },
 };
 
+function TaskTypeIcon({ kind, size = 16 }) {
+  const stroke = Math.max(1.15, size * 0.06);
+  const common = {
+    width: size,
+    height: size,
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: stroke,
+    strokeLinecap: "round",
+    strokeLinejoin: "round",
+    "aria-hidden": true,
+    style: { display: "block", flexShrink: 0 },
+  };
+  switch (kind) {
+    case "Bug":
+      return (
+        <svg {...common}>
+          <g transform="translate(0, 1.25)">
+            <path d="M8 2v4M16 2v4M9 14h6M12 14v4M6 10h2M16 10h2M5 6l2 2M19 6l-2 2M5 18l2-2M19 18l-2-2" />
+            <ellipse cx="12" cy="11" rx="5" ry="6" />
+          </g>
+        </svg>
+      );
+    case "Feature":
+      return (
+        <svg {...common}>
+          <g transform="translate(0, 1.65)">
+            <path d="M12 4.5l1.6 3.2 3.5.5-2.5 2.5.6 3.5L12 12.8 8.8 14.2l.6-3.5L7 8.2l3.5-.5L12 4.5z" />
+          </g>
+        </svg>
+      );
+    case "Mejora":
+      return (
+        <svg {...common}>
+          <g transform="translate(0, -1.35)">
+            <path d="M9 18h6M10 22h4M12 2v2M5 5l1.5 1.5M19 5l-1.5 1.5M4 12H2M22 12h-2" />
+            <path d="M12 6a4 4 0 0 0-2 7.5V16h4v-2.5A4 4 0 0 0 12 6z" />
+          </g>
+        </svg>
+      );
+    case "Task":
+    default:
+      return (
+        <svg {...common}>
+          <path d="M9 11l2 2 4-4" />
+          <rect x="4" y="4" width="16" height="16" rx="3" />
+        </svg>
+      );
+  }
+}
+
+function TaskTypeAvatar({ C, type, size = 28, title, showTooltip = true }) {
+  const [tipOpen, setTipOpen] = useState(false);
+  const meta = TASK_TYPES[type] || TASK_TYPES.Task;
+  const iconSize = Math.round(size * 0.9);
+  const tipLabel = title ?? meta.label;
+  return (
+    <span
+      title={showTooltip ? tipLabel : undefined}
+      aria-label={showTooltip ? tipLabel : undefined}
+      aria-hidden={showTooltip ? undefined : true}
+      onMouseEnter={showTooltip ? () => setTipOpen(true) : undefined}
+      onMouseLeave={showTooltip ? () => setTipOpen(false) : undefined}
+      onFocus={showTooltip ? () => setTipOpen(true) : undefined}
+      onBlur={showTooltip ? () => setTipOpen(false) : undefined}
+      tabIndex={showTooltip ? 0 : undefined}
+      style={{
+        position: "relative",
+        width: size,
+        height: size,
+        borderRadius: "50%",
+        background: meta.color,
+        color: "#fff",
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        flexShrink: 0,
+        lineHeight: 0,
+        boxShadow: "0 1px 2px rgba(0,0,0,0.22)",
+        cursor: "default",
+        outline: "none",
+      }}
+    >
+      <span
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: iconSize,
+          height: iconSize,
+          flexShrink: 0,
+          lineHeight: 0,
+        }}
+      >
+        <TaskTypeIcon kind={type in TASK_TYPES ? type : "Task"} size={iconSize} />
+      </span>
+      {showTooltip && tipOpen && (
+        <span
+          role="tooltip"
+          style={{
+            position: "absolute",
+            left: "50%",
+            bottom: "calc(100% + 7px)",
+            transform: "translateX(-50%)",
+            padding: "5px 9px",
+            borderRadius: 6,
+            fontSize: 11.5,
+            fontWeight: 600,
+            lineHeight: 1.2,
+            whiteSpace: "nowrap",
+            pointerEvents: "none",
+            zIndex: 6,
+            background: C ? C.surfaceRaised : "rgba(18,20,26,0.96)",
+            color: C ? C.text : "#fff",
+            border: C ? `1px solid ${C.borderSoft}` : "none",
+            boxShadow: "0 4px 14px rgba(0,0,0,0.35)",
+          }}
+        >
+          {tipLabel}
+        </span>
+      )}
+    </span>
+  );
+}
+
+function TaskTypeSelect({ C, value, onChange, fieldStyle }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef(null);
+  const selected = TASK_TYPES[value] || TASK_TYPES.Task;
+
+  useEffect(() => {
+    if (!open) return;
+    function onPointerDown(e) {
+      if (!rootRef.current?.contains(e.target)) setOpen(false);
+    }
+    function onKey(e) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", onPointerDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div ref={rootRef} style={{ position: "relative" }}>
+      <button
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((prev) => !prev)}
+        style={{
+          ...fieldStyle,
+          width: "100%",
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          textAlign: "left",
+          cursor: "pointer",
+        }}
+      >
+        <TaskTypeAvatar C={C} type={value in TASK_TYPES ? value : "Task"} size={26} showTooltip={false} />
+        <span style={{ flex: 1, minWidth: 0, fontSize: 14, color: C.text }}>{selected.label}</span>
+        <span style={{ color: C.textFaint, fontSize: 12, flexShrink: 0 }} aria-hidden>
+          ▾
+        </span>
+      </button>
+      {open && (
+        <div
+          role="listbox"
+          aria-label="Etiqueta"
+          style={{
+            position: "absolute",
+            top: "calc(100% + 4px)",
+            left: 0,
+            right: 0,
+            zIndex: 30,
+            borderRadius: 8,
+            border: `1px solid ${C.borderSoft}`,
+            background: C.surfaceRaised,
+            boxShadow: "0 10px 28px rgba(0,0,0,0.35)",
+            overflow: "hidden",
+            padding: 4,
+          }}
+        >
+          {Object.entries(TASK_TYPES).map(([key, val]) => {
+            const active = key === value;
+            return (
+              <button
+                key={key}
+                type="button"
+                role="option"
+                aria-selected={active}
+                onClick={() => {
+                  onChange(key);
+                  setOpen(false);
+                }}
+                style={{
+                  width: "100%",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  padding: "8px 10px",
+                  border: "none",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  background: active ? C.accentSoft : "transparent",
+                  color: C.text,
+                  textAlign: "left",
+                }}
+              >
+                <TaskTypeAvatar C={C} type={key} size={26} showTooltip={false} />
+                <span style={{ fontSize: 14, fontWeight: active ? 600 : 500 }}>{val.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const COLUMNS = [
   { id: "backlog", label: "Backlog", dot: "#C5CAD8" },
   { id: "blocked", label: "Blocked", dot: "#F07178" },
@@ -61,6 +293,35 @@ const COLUMNS = [
   { id: "done", label: "Completado", dot: "#3EE0B4" },
 ];
 const BOARD_COLUMNS = COLUMNS.filter((c) => c.id !== "done");
+
+function minimalColumnLabel(columnOrId) {
+  const id = typeof columnOrId === "string" ? columnOrId : columnOrId.id;
+  const label = typeof columnOrId === "string" ? columnOrId : columnOrId.label;
+  if (id === "backlog") return "Pendiente";
+  return label;
+}
+
+/** Estado mostrado en columnas minimal (bloqueado → pendiente). */
+function minimalBoardStatus(task) {
+  if (task.status === "blocked") return "backlog";
+  return task.status;
+}
+
+function taskInKanbanColumn(task, colId, isMinimal) {
+  const st = isMinimal ? minimalBoardStatus(task) : task.status;
+  if (st !== colId) return false;
+  return isMinimal || !isOverdueTask(task);
+}
+
+function minimalQuickStatusOptions() {
+  return BOARD_COLUMNS.filter((c) => c.id !== "blocked").map((c) => ({
+    id: c.id,
+    label: minimalColumnLabel(c),
+    color: c.dot,
+  }));
+}
+
+const MINIMAL_KANBAN_COLUMNS = BOARD_COLUMNS.filter((c) => c.id !== "blocked");
 
 // Desplegable rápido de estado en la tarjeta (mismos 5 estados y colores que en Plane).
 const CARD_STATUS_OPTIONS = [
@@ -606,6 +867,27 @@ function formatDoneDate(ts) {
   });
 }
 
+function formatDueDateLabel(dueDate) {
+  if (!dueDate) return null;
+  const d = new Date(`${dueDate}T12:00:00`);
+  if (Number.isNaN(d.getTime())) return dueDate;
+  return d.toLocaleDateString("es-CO", { day: "numeric", month: "short", year: "numeric" });
+}
+
+function dueDateSortKey(task) {
+  if (task && task.dueDate) {
+    const t = new Date(`${task.dueDate}T12:00:00`).getTime();
+    if (Number.isFinite(t)) return t;
+  }
+  return Number.POSITIVE_INFINITY;
+}
+
+function compareTasksByDueDate(a, b) {
+  const diff = dueDateSortKey(a) - dueDateSortKey(b);
+  if (diff !== 0) return diff;
+  return (a.createdAt || 0) - (b.createdAt || 0);
+}
+
 // Historial de versiones del campo "Notas" (tareas e iniciativas). Cada vez
 // que se guarda un cambio real en las notas, se agrega al principio lo que
 // decían justo antes de esa edición, para poder ver versiones anteriores.
@@ -639,7 +921,8 @@ function formatUpdated(ts) {
   return `${datePart}, ${timePart} COT`;
 }
 
-export default function KanbanBoard() {
+export default function KanbanBoard({ uiVariant = "classic", onUiVariantChange }) {
+  const isMinimal = uiVariant === "minimal";
   const [tasks, setTasks] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState(null);
@@ -656,6 +939,7 @@ export default function KanbanBoard() {
   const [exportOpen, setExportOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [trashOpen, setTrashOpen] = useState(false);
+  const [mermaidWizardOpen, setMermaidWizardOpen] = useState(false);
   const [previewAttachment, setPreviewAttachment] = useState(null);
   const [openTaskId, setOpenTaskId] = useState(null);
   const [openInitId, setOpenInitId] = useState(null);
@@ -673,8 +957,13 @@ export default function KanbanBoard() {
   const initSaveTokenRef = useRef(0);
   const [draggingId, setDraggingId] = useState(null);
   const [dragOverCol, setDragOverCol] = useState(null);
+  const minimalScrollToTask = useRef(null);
+  const [minimalMoveHighlightId, setMinimalMoveHighlightId] = useState(null);
+  const [minimalMoveHighlightRun, setMinimalMoveHighlightRun] = useState(false);
+  const minimalMoveHighlightDelayTimer = useRef(null);
   const [dark, setDark] = useState(true);
   const [activeTab, setActiveTab] = useState("tablero");
+  const [minimalFilterRoot, setMinimalFilterRoot] = useState(null);
   const saveTimer = useRef(null);
   const saveTokenRef = useRef(0);
   const memberSaveTimer = useRef(null);
@@ -687,7 +976,23 @@ export default function KanbanBoard() {
   const lastDeletedMembersRef = useRef("");
   const applyingRemote = useRef(false);
 
-  const C = useMemo(() => getColors(dark), [dark]);
+  const effectiveDark = isMinimal || dark;
+  const C = useMemo(() => getColors(effectiveDark), [effectiveDark]);
+  const pageBg = isMinimal ? MINIMAL_PAGE_BG : C.bg;
+
+  useEffect(() => {
+    if (!isMinimal) return;
+    setActiveTab("tablero");
+    setInitiativeFilter(null);
+  }, [isMinimal]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return undefined;
+    const root = document.documentElement;
+    if (isMinimal) root.classList.add("fliipa-minimal-shell");
+    else root.classList.remove("fliipa-minimal-shell");
+    return () => root.classList.remove("fliipa-minimal-shell");
+  }, [isMinimal]);
 
   const hasStorage =
     typeof window !== "undefined" &&
@@ -1197,6 +1502,11 @@ export default function KanbanBoard() {
     setTasks(seedTasks());
   }
 
+  function loadMinimalFilterDemoData() {
+    const incoming = minimalFilterDemoTasks();
+    setTasks((prev) => mergeById(prev, incoming));
+  }
+
   function retrySave() {
     // Fuerza que el efecto de guardado vuelva a correr con el estado actual
     setTasks((prev) => [...prev]);
@@ -1240,6 +1550,11 @@ export default function KanbanBoard() {
   }, [boardPool, initiativeFilter]);
 
   const filtered = useMemo(() => {
+    if (isMinimal) {
+      return scopedTasks.filter((t) =>
+        taskMatchesMinimalFilterRoot(t, minimalFilterRoot, { textMatches, samePerson })
+      );
+    }
     return scopedTasks.filter((t) => {
       if (typeFilter && t.type !== typeFilter) return false;
       if (assigneeFilter !== "Todos" && !samePerson(t.assignee, assigneeFilter)) return false;
@@ -1264,12 +1579,25 @@ export default function KanbanBoard() {
       }
       return true;
     });
-  }, [scopedTasks, typeFilter, assigneeFilter, overdueOnly, unassignedOnly, nameQuery, initiatives]);
+  }, [
+    isMinimal,
+    scopedTasks,
+    minimalFilterRoot,
+    typeFilter,
+    assigneeFilter,
+    overdueOnly,
+    unassignedOnly,
+    nameQuery,
+    initiatives,
+  ]);
 
   const overdueTasks = useMemo(() => {
     return tasks
       .filter((t) => {
         if (!isOverdueTask(t)) return false;
+        if (isMinimal) {
+          return taskMatchesMinimalFilterRoot(t, minimalFilterRoot, { textMatches, samePerson });
+        }
         if (initiativeFilter && !idsMatch(t.initiativeId, initiativeFilter)) return false;
         if (typeFilter && t.type !== typeFilter) return false;
         if (assigneeFilter !== "Todos" && !samePerson(t.assignee, assigneeFilter)) return false;
@@ -1294,7 +1622,17 @@ export default function KanbanBoard() {
         return true;
       })
       .sort((a, b) => (a.updatedAt || 0) - (b.updatedAt || 0));
-  }, [tasks, initiativeFilter, typeFilter, assigneeFilter, unassignedOnly, nameQuery, initiatives]);
+  }, [
+    tasks,
+    isMinimal,
+    minimalFilterRoot,
+    initiativeFilter,
+    typeFilter,
+    assigneeFilter,
+    unassignedOnly,
+    nameQuery,
+    initiatives,
+  ]);
 
   const boardFiltersActive =
     initiativeFilter ||
@@ -1345,23 +1683,119 @@ export default function KanbanBoard() {
     });
   }, [initiatives, boardPool]);
 
+  function clearMinimalMoveHighlightTimers() {
+    if (minimalMoveHighlightDelayTimer.current) {
+      clearTimeout(minimalMoveHighlightDelayTimer.current);
+      minimalMoveHighlightDelayTimer.current = null;
+    }
+  }
+
+  function flashMinimalTask(taskId) {
+    if (!isMinimal || !taskId) return;
+    clearMinimalMoveHighlightTimers();
+    setMinimalMoveHighlightRun(false);
+    setMinimalMoveHighlightId(taskId);
+    minimalMoveHighlightDelayTimer.current = setTimeout(() => {
+      setMinimalMoveHighlightRun(true);
+      minimalMoveHighlightDelayTimer.current = null;
+    }, 320);
+  }
+
+  function finishMinimalMoveHighlight(taskId) {
+    if (minimalMoveHighlightId !== taskId) return;
+    setMinimalMoveHighlightRun(false);
+    setMinimalMoveHighlightId(null);
+  }
+
+  useEffect(
+    () => () => {
+      clearMinimalMoveHighlightTimers();
+    },
+    []
+  );
+
   function moveTask(id, status) {
     const now = Date.now();
+    let moved = false;
     setTasks((prev) =>
-      prev.map((t) =>
-        t.id === id && t.status !== status
-          ? { ...t, status, statusChangedAt: now, updatedAt: now }
-          : t
-      )
+      prev.map((t) => {
+        if (t.id === id && t.status !== status) {
+          moved = true;
+          return {
+            ...t,
+            status,
+            ...(isMinimal ? { blocked: false } : {}),
+            statusChangedAt: now,
+            updatedAt: now,
+          };
+        }
+        return t;
+      })
     );
+    if (moved && isMinimal) flashMinimalTask(id);
+  }
+
+  function scrollMinimalTaskIntoView(taskId, { detailOpen = false } = {}) {
+    if (!isMinimal || !taskId) return;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const el = document.querySelector(`[data-minimal-task-id="${taskId}"]`);
+        if (!el) return;
+
+        if (!detailOpen) {
+          el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+          return;
+        }
+
+        const colScroll = el.closest(".fliipa-col-scroll");
+        if (colScroll) {
+          const cardTop = el.offsetTop;
+          const cardHeight = el.offsetHeight;
+          const viewHeight = colScroll.clientHeight;
+          const targetTop = cardTop - Math.max(0, (viewHeight - cardHeight) / 2);
+          colScroll.scrollTo({ top: Math.max(0, targetTop), behavior: "smooth" });
+        }
+
+        const drawerInset = Math.min(420, window.innerWidth) + 16;
+        requestAnimationFrame(() => {
+          const board = el.closest(".fliipa-board");
+          const rect = el.getBoundingClientRect();
+          const maxRight = window.innerWidth - drawerInset;
+          if (board && rect.right > maxRight) {
+            board.scrollBy({ left: rect.right - maxRight, behavior: "smooth" });
+          } else if (board && rect.left < 12) {
+            board.scrollBy({ left: rect.left - 12, behavior: "smooth" });
+          }
+        });
+      });
+    });
+  }
+
+  function queueMinimalScroll(taskId) {
+    if (isMinimal && taskId) minimalScrollToTask.current = taskId;
   }
 
   function dropOnColumn(colId) {
     if (!draggingId) return;
-    moveTask(draggingId, colId);
+    const id = draggingId;
+    queueMinimalScroll(id);
+    moveTask(id, colId);
+    scrollMinimalTaskIntoView(id);
     setDraggingId(null);
     setDragOverCol(null);
   }
+
+  useEffect(() => {
+    const taskId = minimalScrollToTask.current;
+    if (!isMinimal || !taskId) return;
+    minimalScrollToTask.current = null;
+    scrollMinimalTaskIntoView(taskId);
+  }, [tasks, isMinimal]);
+
+  useEffect(() => {
+    if (!isMinimal || !openTaskId) return;
+    scrollMinimalTaskIntoView(openTaskId, { detailOpen: true });
+  }, [openTaskId, isMinimal]);
 
   function moveByOffset(id, offset) {
     const idx = COLUMNS.findIndex((c) => c.id === tasks.find((t) => t.id === id)?.status);
@@ -1492,10 +1926,14 @@ export default function KanbanBoard() {
   const counts = useMemo(() => {
     const m = {};
     COLUMNS.forEach((c) => {
-      m[c.id] = filtered.filter((t) => t.status === c.id && !isOverdueTask(t)).length;
+      m[c.id] = filtered.filter((t) => {
+        const colStatus = isMinimal ? minimalBoardStatus(t) : t.status;
+        if (colStatus !== c.id) return false;
+        return isMinimal || !isOverdueTask(t);
+      }).length;
     });
     return m;
-  }, [filtered]);
+  }, [filtered, isMinimal]);
 
   const stats = useMemo(() => {
     const sevenDays = 7 * 86400000;
@@ -1544,6 +1982,17 @@ export default function KanbanBoard() {
     };
   }, [tasks]);
 
+  const boardColMinWidth = isMinimal ? 248 : 210;
+  const minimalStatusOptions = useMemo(
+    () => COLUMNS.map((c) => ({ id: c.id, label: minimalColumnLabel(c) })),
+    []
+  );
+  const kanbanColumns = isMinimal ? MINIMAL_KANBAN_COLUMNS : BOARD_COLUMNS;
+  const minimalAssigneeOptions = useMemo(
+    () => assignees.filter((a) => a !== "Todos"),
+    [assignees]
+  );
+
   const lastUpdated = useMemo(() => {
     const latest = tasks.reduce(
       (max, t) => Math.max(max, t.statusChangedAt || 0, t.createdAt || 0),
@@ -1552,22 +2001,56 @@ export default function KanbanBoard() {
     return formatUpdated(latest || Date.now());
   }, [tasks]);
 
+  const boardColMinHeight = isMinimal ? undefined : 420;
+  const minimalColShellStyle = isMinimal
+    ? {
+        padding: 0,
+        "--fliipa-col-bg": C.surface,
+        "--fliipa-col-head-border": C.borderSoft,
+      }
+    : {};
+  const colHeadRowStyle = {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: "4px 4px 14px",
+    flexShrink: 0,
+  };
+
   return (
     <div
+      className={isMinimal ? "fliipa-app-minimal" : undefined}
       style={{
         fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-        background: C.bg,
+        background: pageBg,
         color: C.text,
-        minHeight: "100vh",
+        minHeight: isMinimal ? undefined : "100vh",
+        height: isMinimal ? "100dvh" : undefined,
         width: "100%",
         boxSizing: "border-box",
         transition: "background 150ms ease, color 150ms ease",
+        ...(isMinimal
+          ? {
+              display: "flex",
+              flexDirection: "column",
+              overflow: "hidden",
+            }
+          : {}),
       }}
     >
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&display=swap');
         * { box-sizing: border-box; }
-        html, body, #root { height: 100%; width: 100%; background: ${C.bg}; overflow-x: hidden; }
+        html, body, #root { height: 100%; width: 100%; background: ${pageBg}; overflow-x: hidden; }
+        html.fliipa-minimal-shell,
+        html.fliipa-minimal-shell body,
+        html.fliipa-minimal-shell #root {
+          height: 100%;
+          overflow: hidden;
+        }
+        .fliipa-app-minimal .fliipa-top-shell {
+          flex-shrink: 0;
+        }
         ::-webkit-scrollbar { height: 8px; width: 8px; }
         ::-webkit-scrollbar-thumb { background: ${C.border}; border-radius: 4px; }
         ::-webkit-scrollbar-track { background: transparent; }
@@ -1583,6 +2066,87 @@ export default function KanbanBoard() {
           * { transition: none !important; animation: none !important; }
         }
         .fliipa-page { padding: 22px 24px 40px; min-width: 0; }
+        .fliipa-page-minimal {
+          padding: 12px 16px 12px;
+          flex: 1 1 auto;
+          min-height: 0;
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
+        }
+        .fliipa-page-minimal .fliipa-filter-card,
+        .fliipa-page-minimal .fliipa-minimal-banner {
+          flex-shrink: 0;
+        }
+        .fliipa-page-minimal .fliipa-board {
+          flex: 1 1 auto;
+          min-height: 0;
+          align-items: stretch;
+          overflow-x: auto;
+          overflow-y: hidden;
+          padding-bottom: 0;
+        }
+        .fliipa-page-minimal .fliipa-col {
+          min-width: 248px !important;
+          flex: 1 1 248px !important;
+          max-height: none !important;
+          height: 100%;
+          min-height: 0 !important;
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
+        }
+        .fliipa-page-minimal .fliipa-col-scroll {
+          flex: 1 1 auto;
+          min-height: 0;
+          overflow-y: auto;
+          scrollbar-width: none;
+          -ms-overflow-style: none;
+          padding: 0 12px 12px;
+        }
+        .fliipa-page-minimal .fliipa-col-scroll::-webkit-scrollbar {
+          width: 0;
+          height: 0;
+          display: none;
+        }
+        .fliipa-page-minimal .fliipa-col-head {
+          position: sticky;
+          top: 0;
+          z-index: 2;
+          flex-shrink: 0;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          background: var(--fliipa-col-bg);
+          margin: 0 -12px 4px;
+          padding: 12px 16px 10px;
+          box-shadow: 0 1px 0 var(--fliipa-col-head-border);
+        }
+        @keyframes fliipaMinimalMovedFlash {
+          0% {
+            background: ${C.surfaceRaised};
+            border-color: ${C.borderSoft};
+            box-shadow: none;
+          }
+          17% {
+            background: ${C.accentSoft};
+            border-color: ${C.accent};
+            box-shadow: 0 0 0 2px ${C.accent};
+          }
+          84% {
+            background: ${C.accentSoft};
+            border-color: ${C.accent};
+            box-shadow: 0 0 0 2px ${C.accent};
+          }
+          100% {
+            background: ${C.surfaceRaised};
+            border-color: ${C.borderSoft};
+            box-shadow: none;
+          }
+        }
+        .fliipa-minimal-move-highlight {
+          animation: fliipaMinimalMovedFlash 0.8s ease forwards;
+        }
         .fliipa-page-focus { padding: 12px !important; height: 100vh; box-sizing: border-box; display: flex; flex-direction: column; }
         .fliipa-page-focus .fliipa-board { flex: 1 1 auto; }
         .fliipa-info-grid { display: grid; grid-template-columns: 220px 1fr; gap: 18px; align-items: start; }
@@ -1698,6 +2262,12 @@ export default function KanbanBoard() {
             min-height: 340px !important;
             scroll-snap-align: start;
           }
+          .fliipa-page-minimal .fliipa-col {
+            flex: 1 1 248px !important;
+            min-height: 0 !important;
+            max-width: none !important;
+            height: 100%;
+          }
         .fliipa-drawer {
           width: 100% !important;
           border-left: none !important;
@@ -1733,9 +2303,14 @@ export default function KanbanBoard() {
       `}</style>
 
       {!boardFocusMode && (
+        <div className={isMinimal ? "fliipa-top-shell" : undefined}>
         <TopBar
           C={C}
-          dark={dark}
+          pageBg={pageBg}
+          dark={effectiveDark}
+          isMinimal={isMinimal}
+          uiVariant={uiVariant}
+          onUiVariantChange={onUiVariantChange}
           onToggleDark={() => setDark((d) => !d)}
           activeTab={activeTab}
           setActiveTab={setActiveTab}
@@ -1746,8 +2321,10 @@ export default function KanbanBoard() {
           onOpenKaneo={() => setKaneoOpen(true)}
           onOpenTrash={() => setTrashOpen(true)}
           trashCount={trashList(deletedTaskIds).length + trashList(deletedInitIds).length}
+          onOpenMermaidWizard={() => setMermaidWizardOpen(true)}
           onOpenMembers={() => setMembersOpen(true)}
         />
+        </div>
       )}
 
       {boardFocusMode && (
@@ -1775,15 +2352,15 @@ export default function KanbanBoard() {
         </button>
       )}
 
-      <div className={`fliipa-page${boardFocusMode ? " fliipa-page-focus" : ""}`}>
-        {activeTab === "info" ? (
+      <div className={`fliipa-page${boardFocusMode ? " fliipa-page-focus" : ""}${isMinimal ? " fliipa-page-minimal" : ""}`}>
+        {!isMinimal && activeTab === "info" ? (
           <InfoView
             C={C}
             onGoInitiatives={() => setActiveTab("iniciativas")}
             onGoBoard={() => setActiveTab("tablero")}
             onGoDone={() => setActiveTab("hecho")}
           />
-        ) : activeTab === "hecho" ? (
+        ) : !isMinimal && activeTab === "hecho" ? (
           <DoneArchiveView
             C={C}
             tasks={lastMonthOnly ? monthExportTasks : tasks}
@@ -1792,7 +2369,7 @@ export default function KanbanBoard() {
             onReopen={(id) => updateTask(id, { status: "review" })}
             onDelete={deleteTask}
           />
-        ) : activeTab === "iniciativas" ? (
+        ) : !isMinimal && activeTab === "iniciativas" ? (
           <InitiativesView
             C={C}
             initiatives={initiativeStats}
@@ -1815,7 +2392,8 @@ export default function KanbanBoard() {
           <>
             {!boardFocusMode && (
               <>
-            {/* Métricas */}
+            {!isMinimal && (
+            <>
             <div className="fliipa-stats">
               {stats.mode === "month" ? (
                 <>
@@ -1903,17 +2481,20 @@ export default function KanbanBoard() {
                 Las cerradas están en Completado. Las vencidas (fecha pasada o sin actualizar desde el mes pasado) van a la columna Vencidas.
               </div>
             )}
+            </>
+            )}
 
             <div
               className="fliipa-filter-card"
               style={{
                 background: C.surface,
                 border: `1px solid ${C.borderSoft}`,
-                borderRadius: 14,
-                padding: "14px 16px 16px",
-                marginBottom: 18,
+                borderRadius: isMinimal ? 10 : 14,
+                padding: isMinimal ? "12px 14px" : "14px 16px 16px",
+                marginBottom: isMinimal ? 14 : 18,
               }}
             >
+              {!isMinimal && (
               <div className="fliipa-ini-row" style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: 14 }}>
                 <div className="fliipa-row-label" style={rowLabel(C)}>
                   Iniciativa
@@ -1968,6 +2549,7 @@ export default function KanbanBoard() {
                   ))}
                 </div>
               </div>
+              )}
 
               <div
                 className="fliipa-filter-row"
@@ -1979,6 +2561,40 @@ export default function KanbanBoard() {
                   flexWrap: "wrap",
                 }}
               >
+                {isMinimal ? (
+                  <>
+                    <div style={{ flex: "1 1 280px", minWidth: 0 }}>
+                      <MinimalFilterAccordion
+                        C={C}
+                        root={minimalFilterRoot}
+                        onRootChange={setMinimalFilterRoot}
+                        statusOptions={minimalStatusOptions}
+                        assigneeOptions={minimalAssigneeOptions}
+                        onLoadDemoData={
+                          isLocalDevEnvironment() ? loadMinimalFilterDemoData : undefined
+                        }
+                      />
+                    </div>
+                    <button
+                      className="fliipa-new-task"
+                      onClick={() => setModalOpen(true)}
+                      style={{
+                        background: C.accent,
+                        color: C.onAccent,
+                        border: "none",
+                        borderRadius: 20,
+                        padding: "10px 16px",
+                        fontSize: 14,
+                        fontWeight: 700,
+                        cursor: "pointer",
+                        flexShrink: 0,
+                      }}
+                    >
+                      Nueva tarea
+                    </button>
+                  </>
+                ) : (
+                <>
                 <div className="fliipa-filter-controls" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", flex: 1, minWidth: 0 }}>
                   <div className="fliipa-row-label" style={rowLabel(C)}>Filtros</div>
                   <input
@@ -2085,10 +2701,12 @@ export default function KanbanBoard() {
                 >
                   Nueva tarea
                 </button>
+                </>
+                )}
               </div>
             </div>
 
-            {selectedInitiative && scopedTasks.length === 0 && (
+            {!isMinimal && selectedInitiative && scopedTasks.length === 0 && (
               <div
                 style={{
                   marginBottom: 14,
@@ -2110,6 +2728,7 @@ export default function KanbanBoard() {
 
             {error && error !== "no-storage" && (
               <div
+                className={isMinimal ? "fliipa-minimal-banner" : undefined}
                 style={{
                   background: dark ? "#2A1517" : "#FBEAE8",
                   border: `1px solid ${C.danger}`,
@@ -2160,6 +2779,7 @@ export default function KanbanBoard() {
             )}
             {error === "no-storage" && (
               <div
+                className={isMinimal ? "fliipa-minimal-banner" : undefined}
                 style={{
                   background: C.surfaceRaised,
                   border: `1px solid ${C.borderSoft}`,
@@ -2176,65 +2796,68 @@ export default function KanbanBoard() {
 
             {/* Tablero */}
             <div className={`fliipa-board${boardFocusMode ? " fliipa-board-focus" : ""}`}>
-              <div
-                className="fliipa-col"
-                style={{
-                  flex: "1 1 0",
-                  minWidth: 210,
-                  background: C.surface,
-                  border: `1px solid ${C.danger}`,
-                  borderRadius: 14,
-                  padding: 12,
-                  minHeight: 420,
-                }}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 4px 14px" }}>
-                  <span style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, fontWeight: 600 }}>
-                    <span style={{ width: 8, height: 8, borderRadius: "50%", background: C.danger, display: "inline-block" }} />
-                    Vencidas
-                  </span>
-                  <span
-                    style={{
-                      fontSize: 12,
-                      color: overdueTasks.length ? C.danger : C.textFaint,
-                      background: C.surfaceRaised,
-                      borderRadius: 20,
-                      padding: "1px 8px",
-                    }}
-                  >
-                    {overdueTasks.length}
-                  </span>
+              {!isMinimal && (
+                <div
+                  className="fliipa-col"
+                  style={{
+                    flex: "1 1 0",
+                    minWidth: boardColMinWidth,
+                    background: C.surface,
+                    border: `1px solid ${C.danger}`,
+                    borderRadius: 14,
+                    padding: 12,
+                    minHeight: boardColMinHeight,
+                  }}
+                >
+                  <div style={colHeadRowStyle}>
+                    <span style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, fontWeight: 600 }}>
+                      <span style={{ width: 8, height: 8, borderRadius: "50%", background: C.danger, display: "inline-block" }} />
+                      Vencidas
+                    </span>
+                    <span
+                      style={{
+                        fontSize: 12,
+                        color: overdueTasks.length ? C.danger : C.textFaint,
+                        background: C.surfaceRaised,
+                        borderRadius: 20,
+                        padding: "1px 8px",
+                      }}
+                    >
+                      {overdueTasks.length}
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {overdueTasks.map((task) => {
+                      const statusIdx = COLUMNS.findIndex((c) => c.id === task.status);
+                      return (
+                        <BoardTaskCard
+                          isMinimal={false}
+                          key={task.id}
+                          C={C}
+                          task={task}
+                          selected={openTaskId === task.id}
+                          dragging={draggingId === task.id}
+                          onDragStart={() => setDraggingId(task.id)}
+                          onDragEnd={() => setDraggingId(null)}
+                          onMoveLeft={statusIdx > 0 ? () => moveByOffset(task.id, -1) : null}
+                          onMoveRight={statusIdx >= 0 && statusIdx < COLUMNS.length - 1 ? () => moveByOffset(task.id, 1) : null}
+                          onDelete={() => deleteTask(task.id)}
+                          onToggleBlocked={() => toggleBlocked(task.id)}
+                          onChangeStatus={(status) => moveTask(task.id, status)}
+                          onOpen={() => setOpenTaskId(task.id)}
+                          initiative={initiatives.find((i) => idsMatch(i.id, task.initiativeId)) || null}
+                        />
+                      );
+                    })}
+                    {overdueTasks.length === 0 && (
+                      <div style={{ fontSize: 12.5, color: C.textFaint, padding: "10px 4px", textAlign: "center" }}>
+                        Sin tareas vencidas
+                      </div>
+                    )}
+                  </div>
                 </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  {overdueTasks.map((task) => {
-                    const statusIdx = COLUMNS.findIndex((c) => c.id === task.status);
-                    return (
-                      <TaskCard
-                        key={task.id}
-                        C={C}
-                        task={task}
-                        selected={openTaskId === task.id}
-                        dragging={draggingId === task.id}
-                        onDragStart={() => setDraggingId(task.id)}
-                        onDragEnd={() => setDraggingId(null)}
-                        onMoveLeft={statusIdx > 0 ? () => moveByOffset(task.id, -1) : null}
-                        onMoveRight={statusIdx >= 0 && statusIdx < COLUMNS.length - 1 ? () => moveByOffset(task.id, 1) : null}
-                        onDelete={() => deleteTask(task.id)}
-                        onToggleBlocked={() => toggleBlocked(task.id)}
-                        onChangeStatus={(status) => moveTask(task.id, status)}
-                        onOpen={() => setOpenTaskId(task.id)}
-                        initiative={initiatives.find((i) => idsMatch(i.id, task.initiativeId)) || null}
-                      />
-                    );
-                  })}
-                  {overdueTasks.length === 0 && (
-                    <div style={{ fontSize: 12.5, color: C.textFaint, padding: "10px 4px", textAlign: "center" }}>
-                      Sin tareas vencidas
-                    </div>
-                  )}
-                </div>
-              </div>
-              {BOARD_COLUMNS.map((col, colIdx) => (
+              )}
+              {kanbanColumns.map((col, colIdx) => (
                 <div
                   className="fliipa-col"
                   key={col.id}
@@ -2249,42 +2872,54 @@ export default function KanbanBoard() {
                   }}
                   style={{
                     flex: "1 1 0",
-                    minWidth: 210,
+                    minWidth: boardColMinWidth,
                     background: C.surface,
                     border: `1px solid ${dragOverCol === col.id ? C.accent : C.borderSoft}`,
                     borderRadius: 14,
-                    padding: 12,
-                    minHeight: 420,
+                    padding: isMinimal ? 0 : 12,
+                    minHeight: boardColMinHeight,
                     transition: "border-color 120ms ease",
+                    ...minimalColShellStyle,
                   }}
                 >
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 4px 14px" }}>
-                    <span style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, fontWeight: 600 }}>
-                      <span style={{ width: 8, height: 8, borderRadius: "50%", background: col.dot || C.textMuted, display: "inline-block" }} />
-                      {col.label}
-                    </span>
-                    <span
-                      style={{
-                        fontSize: 12,
-                        color: C.textFaint,
-                        background: C.surfaceRaised,
-                        borderRadius: 20,
-                        padding: "1px 8px",
-                      }}
+                  {isMinimal ? (
+                    <div
+                      className="fliipa-col-scroll"
+                      style={{ display: "flex", flexDirection: "column", gap: 8 }}
                     >
-                      {counts[col.id]}
-                    </span>
-                  </div>
-
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      <div className="fliipa-col-head">
+                        <span style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, fontWeight: 600 }}>
+                          <span style={{ width: 8, height: 8, borderRadius: "50%", background: col.dot || C.textMuted, display: "inline-block" }} />
+                          {isMinimal ? minimalColumnLabel(col) : col.label}
+                        </span>
+                        <span
+                          style={{
+                            fontSize: 12,
+                            color: C.textFaint,
+                            background: C.surfaceRaised,
+                            borderRadius: 20,
+                            padding: "1px 8px",
+                          }}
+                        >
+                          {counts[col.id]}
+                        </span>
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     {filtered
-                      .filter((t) => t.status === col.id && !isOverdueTask(t))
-                      .sort((a, b) => b.createdAt - a.createdAt)
+                      .filter((t) => taskInKanbanColumn(t, col.id, isMinimal))
+                      .sort(compareTasksByDueDate)
                       .map((task) => (
-                        <TaskCard
+                        <BoardTaskCard
+                          isMinimal={isMinimal}
                           key={task.id}
                           C={C}
                           task={task}
+                          moveHighlightRun={
+                            isMinimal &&
+                            minimalMoveHighlightRun &&
+                            minimalMoveHighlightId === task.id
+                          }
+                          onMoveHighlightEnd={() => finishMinimalMoveHighlight(task.id)}
                           selected={openTaskId === task.id}
                           dragging={draggingId === task.id}
                           onDragStart={() => setDraggingId(task.id)}
@@ -2293,7 +2928,10 @@ export default function KanbanBoard() {
                           onMoveRight={() => moveByOffset(task.id, 1)}
                           onDelete={() => deleteTask(task.id)}
                           onToggleBlocked={() => toggleBlocked(task.id)}
-                          onChangeStatus={(status) => moveTask(task.id, status)}
+                          onChangeStatus={(status) => {
+                            queueMinimalScroll(task.id);
+                            moveTask(task.id, status);
+                          }}
                           onOpen={() => setOpenTaskId(task.id)}
                           initiative={initiatives.find((i) => idsMatch(i.id, task.initiativeId)) || null}
                         />
@@ -2303,7 +2941,58 @@ export default function KanbanBoard() {
                         Sin tareas aquí
                       </div>
                     )}
-                  </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div style={colHeadRowStyle}>
+                        <span style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, fontWeight: 600 }}>
+                          <span style={{ width: 8, height: 8, borderRadius: "50%", background: col.dot || C.textMuted, display: "inline-block" }} />
+                          {col.label}
+                        </span>
+                        <span
+                          style={{
+                            fontSize: 12,
+                            color: C.textFaint,
+                            background: C.surfaceRaised,
+                            borderRadius: 20,
+                            padding: "1px 8px",
+                          }}
+                        >
+                          {counts[col.id]}
+                        </span>
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                        {filtered
+                          .filter((t) => taskInKanbanColumn(t, col.id, false))
+                          .sort((a, b) => b.createdAt - a.createdAt)
+                          .map((task) => (
+                            <BoardTaskCard
+                              isMinimal={isMinimal}
+                              key={task.id}
+                              C={C}
+                              task={task}
+                              selected={openTaskId === task.id}
+                              dragging={draggingId === task.id}
+                              onDragStart={() => setDraggingId(task.id)}
+                              onDragEnd={() => setDraggingId(null)}
+                              onMoveLeft={colIdx > 0 ? () => moveByOffset(task.id, -1) : null}
+                              onMoveRight={() => moveByOffset(task.id, 1)}
+                              onDelete={() => deleteTask(task.id)}
+                              onToggleBlocked={() => toggleBlocked(task.id)}
+                              onChangeStatus={(status) => moveTask(task.id, status)}
+                              onOpen={() => setOpenTaskId(task.id)}
+                              initiative={initiatives.find((i) => idsMatch(i.id, task.initiativeId)) || null}
+                            />
+                          ))}
+                        {counts[col.id] === 0 && (
+                          <div style={{ fontSize: 12.5, color: C.textFaint, padding: "10px 4px", textAlign: "center" }}>
+                            Sin tareas aquí
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  )}
                 </div>
               ))}
               <div
@@ -2319,63 +3008,106 @@ export default function KanbanBoard() {
                 }}
                 style={{
                   flex: "1 1 0",
-                  minWidth: 210,
+                  minWidth: boardColMinWidth,
                   background: C.surface,
                   border: `1px dashed ${dragOverCol === "done" ? C.accent : C.border}`,
                   borderRadius: 14,
-                  padding: 12,
-                  minHeight: 420,
+                  padding: isMinimal ? 0 : 12,
+                  minHeight: boardColMinHeight,
                   transition: "border-color 120ms ease",
+                  ...minimalColShellStyle,
                 }}
               >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 4px 14px" }}>
-                  <span style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, fontWeight: 600 }}>
-                    <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#3EE0B4", display: "inline-block" }} />
-                    Completado
-                  </span>
-                  <span
-                    style={{
-                      fontSize: 12,
-                      color: C.textFaint,
-                      background: C.surfaceRaised,
-                      borderRadius: 20,
-                      padding: "1px 8px",
-                    }}
+                {isMinimal ? (
+                  <div
+                    className="fliipa-col-scroll"
+                    style={{ display: "flex", flexDirection: "column", gap: 8 }}
                   >
-                    {doneTasks.length}
-                  </span>
-                </div>
-                <div
-                  style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    gap: 12,
-                    minHeight: 280,
-                    padding: "18px 10px",
-                    textAlign: "center",
-                  }}
-                >
-                  <div style={{ fontSize: 13, color: C.textMuted, lineHeight: 1.45 }}>
-                    Al mover una tarea aquí sale del tablero y queda guardada en el archivo.
+                    <div className="fliipa-col-head">
+                      <span style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, fontWeight: 600 }}>
+                        <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#3EE0B4", display: "inline-block" }} />
+                        Completado
+                      </span>
+                      <span
+                        style={{
+                          fontSize: 12,
+                          color: C.textFaint,
+                          background: C.surfaceRaised,
+                          borderRadius: 20,
+                          padding: "1px 8px",
+                        }}
+                      >
+                        {doneTasks.length}
+                      </span>
+                    </div>
+                    <div
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "center",
+                        justifyContent: "flex-start",
+                        gap: 12,
+                        padding: "6px 10px 18px",
+                        textAlign: "center",
+                      }}
+                    >
+                      <div style={{ fontSize: 13, color: C.textMuted, lineHeight: 1.45 }}>
+                        Al mover una tarea aquí sale del tablero y queda guardada en el archivo.
+                      </div>
+                    </div>
                   </div>
-                  <button
-                    onClick={() => setActiveTab("hecho")}
-                    style={{
-                      background: C.accentSoft,
-                      color: C.accent,
-                      border: "none",
-                      borderRadius: 20,
-                      padding: "8px 14px",
-                      fontSize: 13,
-                      fontWeight: 700,
-                      cursor: "pointer",
-                    }}
-                  >
-                    Ver archivo{doneTasks.length ? ` · ${doneTasks.length}` : ""}
-                  </button>
-                </div>
+                ) : (
+                  <>
+                    <div style={colHeadRowStyle}>
+                      <span style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, fontWeight: 600 }}>
+                        <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#3EE0B4", display: "inline-block" }} />
+                        Completado
+                      </span>
+                      <span
+                        style={{
+                          fontSize: 12,
+                          color: C.textFaint,
+                          background: C.surfaceRaised,
+                          borderRadius: 20,
+                          padding: "1px 8px",
+                        }}
+                      >
+                        {doneTasks.length}
+                      </span>
+                    </div>
+                    <div
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        gap: 12,
+                        minHeight: 280,
+                        padding: "18px 10px",
+                        textAlign: "center",
+                      }}
+                    >
+                      <div style={{ fontSize: 13, color: C.textMuted, lineHeight: 1.45 }}>
+                        Al mover una tarea aquí sale del tablero y queda guardada en el archivo.
+                      </div>
+                      <button
+                        onClick={() => setActiveTab("hecho")}
+                        style={{
+                          background: C.accentSoft,
+                          color: C.accent,
+                          border: "none",
+                          borderRadius: 20,
+                          padding: "8px 14px",
+                          fontSize: 13,
+                          fontWeight: 700,
+                          cursor: "pointer",
+                        }}
+                      >
+                        Ver archivo{doneTasks.length ? ` · ${doneTasks.length}` : ""}
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
             </div>
           </>
@@ -2388,6 +3120,8 @@ export default function KanbanBoard() {
           assignees={memberNames}
           initiatives={initiatives}
           defaultInitiativeId={initiativeFilter}
+          hideInitiative={isMinimal}
+          richNotes={isMinimal}
           onClose={() => setModalOpen(false)}
           onSave={addTask}
         />
@@ -2419,6 +3153,10 @@ export default function KanbanBoard() {
 
       {importOpen && (
         <ImportModal C={C} onClose={() => setImportOpen(false)} onApply={applyImportedSnapshot} />
+      )}
+
+      {mermaidWizardOpen && isMinimal && (
+        <MermaidWizardModal C={C} onClose={() => setMermaidWizardOpen(false)} />
       )}
 
       {trashOpen && (
@@ -2460,6 +3198,10 @@ export default function KanbanBoard() {
           task={tasks.find((t) => t.id === openTaskId)}
           assignees={memberNames}
           initiatives={initiatives}
+          hideBlockedFlag={isMinimal}
+          hideInitiative={isMinimal}
+          richNotes={isMinimal}
+          showTaskId={isMinimal}
           onClose={() => setOpenTaskId(null)}
           onSave={(patch) => updateTask(openTaskId, patch)}
           onDelete={() => deleteTask(openTaskId)}
@@ -2561,7 +3303,67 @@ async function copyShareLink(title) {
   }
 }
 
-function TopBar({ C, dark, onToggleDark, activeTab, setActiveTab, lastUpdated, syncStatus, onOpenExport, onOpenImport, onOpenKaneo, onOpenTrash, trashCount, onOpenMembers }) {
+function UiModeSwitcher({ C, uiVariant, onUiVariantChange }) {
+  if (typeof onUiVariantChange !== "function") return null;
+  const btn = (id, label) => {
+    const active = uiVariant === id;
+    return (
+      <button
+        type="button"
+        onClick={() => onUiVariantChange(id)}
+        aria-pressed={active}
+        style={{
+          background: active ? C.accentSoft : "transparent",
+          border: "none",
+          color: active ? C.text : C.textMuted,
+          padding: "4px 10px",
+          fontSize: 12,
+          fontWeight: active ? 600 : 500,
+          cursor: "pointer",
+        }}
+      >
+        {label}
+      </button>
+    );
+  };
+  return (
+    <div
+      role="group"
+      aria-label="Interfaz"
+      style={{
+        display: "flex",
+        border: `1px solid ${C.border}`,
+        borderRadius: 8,
+        overflow: "hidden",
+        flexShrink: 0,
+      }}
+    >
+      {btn("classic", "Clásica")}
+      {btn("minimal", "Minimalista")}
+    </div>
+  );
+}
+
+function TopBar({
+  C,
+  pageBg,
+  dark,
+  isMinimal,
+  uiVariant,
+  onUiVariantChange,
+  onToggleDark,
+  activeTab,
+  setActiveTab,
+  lastUpdated,
+  syncStatus,
+  onOpenExport,
+  onOpenImport,
+  onOpenKaneo,
+  onOpenTrash,
+  trashCount,
+  onOpenMermaidWizard,
+  onOpenMembers,
+}) {
   const [shareStatus, setShareStatus] = useState(null);
   const shareTimerRef = useRef(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -2610,9 +3412,19 @@ function TopBar({ C, dark, onToggleDark, activeTab, setActiveTab, lastUpdated, s
       : syncStatus === "local"
       ? { label: "Sin guardado", color: C.textFaint }
       : { label: "Error al guardar", color: C.danger };
+  const barBg = isMinimal ? pageBg : C.bg;
+  const tabs = isMinimal
+    ? [{ id: "tablero", label: "Tablero" }]
+    : [
+        { id: "iniciativas", label: "Iniciativas" },
+        { id: "tablero", label: "Tablero" },
+        { id: "hecho", label: "Completado" },
+        { id: "info", label: "Información" },
+      ];
+
   return (
-    <div style={{ borderBottom: `1px solid ${C.borderSoft}`, background: C.bg }}>
-      {/* Fila 1: breadcrumb + avatares + compartir */}
+    <div style={{ borderBottom: `1px solid ${C.borderSoft}`, background: barBg }}>
+      {!isMinimal && (
       <div
         className="fliipa-top-row"
         style={{
@@ -2794,57 +3606,67 @@ function TopBar({ C, dark, onToggleDark, activeTab, setActiveTab, lastUpdated, s
           </button>
         </div>
       </div>
+      )}
 
-      {/* Fila 2: título + tabs + estado */}
       <div
         className="fliipa-title-row"
         style={{
           display: "flex",
           justifyContent: "space-between",
           alignItems: "center",
-          padding: "14px 20px",
+          padding: isMinimal ? "10px 16px" : "14px 20px",
           flexWrap: "wrap",
           gap: 12,
         }}
       >
         <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
           <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-            <span className="fliipa-title" style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: 22, fontWeight: 700 }}>
-              Fliipa: Tablero de tareas
+            <span
+              className="fliipa-title"
+              style={{
+                fontFamily: "'Space Grotesk', sans-serif",
+                fontSize: isMinimal ? 18 : 22,
+                fontWeight: isMinimal ? 600 : 700,
+              }}
+            >
+              {isMinimal ? "Fliipa board" : "Fliipa: Tablero de tareas"}
             </span>
-            <span className="fliipa-subtitle" style={{ fontSize: 13, color: C.textFaint }}>Equipo de producto</span>
+            {!isMinimal && (
+              <span className="fliipa-subtitle" style={{ fontSize: 13, color: C.textFaint }}>
+                Equipo de producto
+              </span>
+            )}
           </div>
-          <div style={{ display: "flex", gap: 18, marginLeft: 0 }}>
-            {[
-              { id: "iniciativas", label: "Iniciativas" },
-              { id: "tablero", label: "Tablero" },
-              { id: "hecho", label: "Completado" },
-              { id: "info", label: "Información" },
-            ].map((tab) => (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                style={{
-                  background: "none",
-                  border: "none",
-                  borderBottom: `2px solid ${activeTab === tab.id ? C.accent : "transparent"}`,
-                  color: activeTab === tab.id ? C.text : C.textMuted,
-                  fontWeight: activeTab === tab.id ? 600 : 500,
-                  fontSize: 14,
-                  padding: "4px 2px",
-                  cursor: "pointer",
-                }}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
+          {!isMinimal && (
+            <div style={{ display: "flex", gap: 18, marginLeft: 0 }}>
+              {tabs.map((tab) => (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    borderBottom: `2px solid ${activeTab === tab.id ? C.accent : "transparent"}`,
+                    color: activeTab === tab.id ? C.text : C.textMuted,
+                    fontWeight: activeTab === tab.id ? 600 : 500,
+                    fontSize: 14,
+                    padding: "4px 2px",
+                    cursor: "pointer",
+                  }}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-          <span className="fliipa-updated" style={{ fontSize: 12.5, color: C.textFaint }}>
-            Última actualización <strong style={{ color: C.textMuted }}>{lastUpdated}</strong>
-          </span>
+        <div style={{ display: "flex", alignItems: "center", gap: isMinimal ? 8 : 14, flexWrap: "wrap" }}>
+          {!isMinimal && (
+            <span className="fliipa-updated" style={{ fontSize: 12.5, color: C.textFaint }}>
+              Última actualización <strong style={{ color: C.textMuted }}>{lastUpdated}</strong>
+            </span>
+          )}
           <span
             style={{
               display: "flex",
@@ -2869,23 +3691,102 @@ function TopBar({ C, dark, onToggleDark, activeTab, setActiveTab, lastUpdated, s
             />
             {badge.label}
           </span>
-          <button
-            onClick={onToggleDark}
-            aria-label={dark ? "Cambiar a modo claro" : "Cambiar a modo oscuro"}
-            title={dark ? "Modo claro" : "Modo oscuro"}
-            style={{
-              background: "none",
-              border: `1px solid ${C.border}`,
-              color: C.textMuted,
-              borderRadius: 6,
-              width: 28,
-              height: 28,
-              cursor: "pointer",
-              fontSize: 13,
-            }}
-          >
-            {dark ? "☾" : "☀"}
-          </button>
+          <UiModeSwitcher C={C} uiVariant={uiVariant} onUiVariantChange={onUiVariantChange} />
+          {isMinimal && (
+            <>
+              <button
+                onClick={onOpenTrash}
+                style={{
+                  background: "none",
+                  border: `1px solid ${C.border}`,
+                  color: C.textMuted,
+                  borderRadius: 6,
+                  padding: "4px 8px",
+                  cursor: "pointer",
+                  fontSize: 11,
+                  fontWeight: 600,
+                }}
+                aria-label="Papelera"
+                title="Papelera"
+              >
+                Papelera{trashCount ? ` (${trashCount})` : ""}
+              </button>
+              <button
+                onClick={onOpenMermaidWizard}
+                style={{
+                  background: "none",
+                  border: `1px solid ${C.border}`,
+                  color: C.textMuted,
+                  borderRadius: 6,
+                  width: 28,
+                  height: 28,
+                  cursor: "pointer",
+                  fontSize: 14,
+                  lineHeight: 1,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+                aria-label="Asistente Mermaid"
+                title="Asistente Mermaid"
+              >
+                ⬡
+              </button>
+              <button
+                onClick={onOpenExport}
+                style={{
+                  background: "none",
+                  border: `1px solid ${C.border}`,
+                  color: C.textMuted,
+                  borderRadius: 6,
+                  width: 28,
+                  height: 28,
+                  cursor: "pointer",
+                  fontSize: 13,
+                }}
+                aria-label="Exportar respaldo"
+                title="Exportar respaldo"
+              >
+                ⇩
+              </button>
+              <button
+                onClick={onOpenImport}
+                style={{
+                  background: "none",
+                  border: `1px solid ${C.border}`,
+                  color: C.textMuted,
+                  borderRadius: 6,
+                  width: 28,
+                  height: 28,
+                  cursor: "pointer",
+                  fontSize: 13,
+                }}
+                aria-label="Importar respaldo"
+                title="Importar respaldo"
+              >
+                ⇧
+              </button>
+            </>
+          )}
+          {!isMinimal && (
+            <button
+              onClick={onToggleDark}
+              aria-label={dark ? "Cambiar a modo claro" : "Cambiar a modo oscuro"}
+              title={dark ? "Modo claro" : "Modo oscuro"}
+              style={{
+                background: "none",
+                border: `1px solid ${C.border}`,
+                color: C.textMuted,
+                borderRadius: 6,
+                width: 28,
+                height: 28,
+                cursor: "pointer",
+                fontSize: 13,
+              }}
+            >
+              {dark ? "☾" : "☀"}
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -4627,6 +5528,134 @@ function FilterChip({ C, active, label, onClick, dotColor }) {
   );
 }
 
+function BoardTaskCard({ isMinimal, ...props }) {
+  if (isMinimal) {
+    return (
+      <TaskCardMinimal
+        C={props.C}
+        task={props.task}
+        dragging={props.dragging}
+        selected={props.selected}
+        moveHighlightRun={props.moveHighlightRun}
+        onMoveHighlightEnd={props.onMoveHighlightEnd}
+        onDragStart={props.onDragStart}
+        onDragEnd={props.onDragEnd}
+        onChangeStatus={props.onChangeStatus}
+        onOpen={props.onOpen}
+      />
+    );
+  }
+  return <TaskCard {...props} />;
+}
+
+function TaskCardMinimal({
+  C,
+  task,
+  dragging,
+  selected,
+  moveHighlightRun,
+  onMoveHighlightEnd,
+  onDragStart,
+  onDragEnd,
+  onChangeStatus,
+  onOpen,
+}) {
+  const dueLabel = formatDueDateLabel(task.dueDate);
+  const overdue = isOverdueTask(task);
+
+  return (
+    <div
+      data-minimal-task-id={task.id}
+      className={moveHighlightRun ? "fliipa-minimal-move-highlight" : undefined}
+      draggable
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
+      onAnimationEnd={(e) => {
+        if (
+          e.target !== e.currentTarget ||
+          e.animationName !== "fliipaMinimalMovedFlash" ||
+          !onMoveHighlightEnd
+        )
+          return;
+        onMoveHighlightEnd();
+      }}
+      onClick={(e) => {
+        if (e.target.closest("button")) return;
+        onOpen && onOpen();
+      }}
+      style={{
+        background: C.surfaceRaised,
+        border: `1px solid ${selected ? C.accent : C.borderSoft}`,
+        borderRadius: 8,
+        padding: "10px 12px",
+        cursor: dragging ? "grabbing" : "pointer",
+        opacity: dragging ? 0.4 : 1,
+        boxShadow: selected ? `0 0 0 1px ${C.accent}` : "none",
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 10, minWidth: 0 }}>
+        <TaskTypeAvatar C={C} type={task.type} size={30} />
+        <div
+          style={{
+            fontSize: 13.5,
+            fontWeight: 600,
+            lineHeight: 1.35,
+            color: C.text,
+            overflow: "hidden",
+            display: "-webkit-box",
+            WebkitLineClamp: 3,
+            WebkitBoxOrient: "vertical",
+            flex: "1 1 auto",
+            minWidth: 0,
+            paddingTop: 2,
+          }}
+        >
+          {task.title}
+        </div>
+      </div>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 10,
+          minWidth: 0,
+        }}
+      >
+        <span
+          style={{
+            fontSize: 12,
+            color: task.assignee ? C.textMuted : C.textFaint,
+            fontStyle: task.assignee ? "normal" : "italic",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            flex: "1 1 auto",
+            minWidth: 0,
+          }}
+        >
+          {task.assignee || "Sin asignar"}
+        </span>
+        <span
+          style={{
+            fontSize: 11.5,
+            fontWeight: 500,
+            color: dueLabel ? (overdue ? C.danger : C.textFaint) : C.textFaint,
+            flexShrink: 0,
+            whiteSpace: "nowrap",
+          }}
+          title={dueLabel ? `Fecha límite: ${dueLabel}` : "Sin fecha límite"}
+        >
+          {dueLabel || "—"}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function TaskCard({ C, task, dragging, selected, onDragStart, onDragEnd, onMoveLeft, onMoveRight, onDelete, onToggleBlocked, onChangeStatus, onOpen, initiative }) {
   const [hover, setHover] = useState(false);
   const typeMeta = TASK_TYPES[task.type] || TASK_TYPES.Task;
@@ -4797,7 +5826,7 @@ function TaskCard({ C, task, dragging, selected, onDragStart, onDragEnd, onMoveL
     </div>
   );
 }
-function StatusQuickMenu({ C, status, onChange }) {
+function StatusQuickMenu({ C, status, onChange, statusOptions }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef(null);
 
@@ -4810,11 +5839,12 @@ function StatusQuickMenu({ C, status, onChange }) {
     return () => document.removeEventListener("mousedown", handleOutside);
   }, [open]);
 
-  const known = CARD_STATUS_OPTIONS.find((s) => s.id === status);
+  const pool = statusOptions && statusOptions.length ? statusOptions : CARD_STATUS_OPTIONS;
+  const known = pool.find((s) => s.id === status);
   const fallback = COLUMNS.find((c) => c.id === status);
   const current = known || {
     id: status,
-    label: fallback ? fallback.label : "Nuevo",
+    label: fallback ? minimalColumnLabel(fallback) : "Pendiente",
     color: fallback ? fallback.dot : CARD_STATUS_OPTIONS[0].color,
   };
 
@@ -4861,7 +5891,7 @@ function StatusQuickMenu({ C, status, onChange }) {
             boxShadow: "0 10px 28px rgba(0,0,0,0.35)",
           }}
         >
-          {CARD_STATUS_OPTIONS.map((opt) => (
+          {pool.map((opt) => (
             <button
               key={opt.id}
               onClick={() => {
@@ -4919,7 +5949,21 @@ function arrowStyle(C) {
   };
 }
 
-function TaskDetailModal({ C, task, assignees, initiatives, onClose, onSave, onDelete, onOpenAttachment }) {
+function TaskDetailModal({
+  C,
+  task,
+  assignees,
+  initiatives,
+  hideBlockedFlag,
+  hideInitiative,
+  hideTaskType,
+  richNotes,
+  showTaskId,
+  onClose,
+  onSave,
+  onDelete,
+  onOpenAttachment,
+}) {
   const [title, setTitle] = useState(task.title || "");
   const [description, setDescription] = useState(task.description || "");
   const [initiativeId, setInitiativeId] = useState(task.initiativeId || "");
@@ -4986,7 +6030,7 @@ function TaskDetailModal({ C, task, assignees, initiatives, onClose, onSave, onD
   }
 
   async function handleSaveNotes() {
-    if (saving) return;
+    if (saving) return false;
     const finalAssignee = assignee === "__none__" ? "" : assignee.trim();
     setSaving(true);
     setAttachError(null);
@@ -5009,10 +6053,21 @@ function TaskDetailModal({ C, task, assignees, initiatives, onClose, onSave, onD
       });
       setPending([]);
       setSaving(false);
+      return true;
     } catch (e) {
       setAttachError("No se pudieron guardar los cambios. Intenta de nuevo.");
       setSaving(false);
+      return false;
     }
+  }
+
+  async function persistNotesBeforeView() {
+    const trimmed = description.trim();
+    const notesChanged = trimmed !== (task.description || "");
+    if (notesChanged || pending.length > 0) {
+      return handleSaveNotes();
+    }
+    return true;
   }
 
   const history = [];
@@ -5105,6 +6160,8 @@ function TaskDetailModal({ C, task, assignees, initiatives, onClose, onSave, onD
           </button>
         </div>
 
+        {showTaskId && <CopyableTaskIdRow C={C} taskId={task.id} />}
+
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
           {linkedInitiative && (
             <span
@@ -5171,40 +6228,42 @@ function TaskDetailModal({ C, task, assignees, initiatives, onClose, onSave, onD
           style={input}
         />
 
-        <label style={label}>Etiqueta</label>
-        <select
-          value={type}
-          onChange={(e) => {
-            const next = e.target.value;
-            setType(next);
-            patchField({ type: next });
-          }}
-          style={input}
-        >
-          {Object.entries(TASK_TYPES).map(([key, val]) => (
-            <option key={key} value={key}>
-              {val.label}
-            </option>
-          ))}
-        </select>
+        {!hideTaskType && (
+          <>
+            <label style={label}>Etiqueta</label>
+            <TaskTypeSelect
+              C={C}
+              value={type}
+              fieldStyle={input}
+              onChange={(next) => {
+                setType(next);
+                patchField({ type: next });
+              }}
+            />
+          </>
+        )}
 
-        <label style={label}>Iniciativa</label>
-        <select
-          value={initiativeId}
-          onChange={(e) => {
-            const next = e.target.value;
-            setInitiativeId(next);
-            patchField({ initiativeId: next || null });
-          }}
-          style={input}
-        >
-          <option value="">Sin iniciativa</option>
-          {(initiatives || []).map((ini) => (
-            <option key={ini.id} value={ini.id}>
-              {ini.title}
-            </option>
-          ))}
-        </select>
+        {!hideInitiative && (
+          <>
+            <label style={label}>Iniciativa</label>
+            <select
+              value={initiativeId}
+              onChange={(e) => {
+                const next = e.target.value;
+                setInitiativeId(next);
+                patchField({ initiativeId: next || null });
+              }}
+              style={input}
+            >
+              <option value="">Sin iniciativa</option>
+              {(initiatives || []).map((ini) => (
+                <option key={ini.id} value={ini.id}>
+                  {ini.title}
+                </option>
+              ))}
+            </select>
+          </>
+        )}
 
         <label style={label}>Notas</label>
         <div
@@ -5225,14 +6284,26 @@ function TaskDetailModal({ C, task, assignees, initiatives, onClose, onSave, onD
             background: dropActive ? C.surfaceRaised : "transparent",
           }}
         >
-          <textarea
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            rows={6}
-            placeholder="Notas de la tarea. Arrastra aquí imágenes o documentos."
-            style={{ ...input, resize: "vertical", minHeight: 120, margin: 0, border: "none", background: "transparent" }}
-          />
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap", padding: "0 2px 2px" }}>
+          {richNotes ? (
+            <TaskNotesField
+              C={C}
+              value={description}
+              onChange={setDescription}
+              notesResetKey={task.id}
+              onPersistBeforeView={persistNotesBeforeView}
+              editorMinHeight={220}
+              placeholder="Notas en markdown. Usa **negrita**, listas y bloques ```mermaid```."
+            />
+          ) : (
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              rows={6}
+              placeholder="Notas de la tarea. Arrastra aquí imágenes o documentos."
+              style={{ ...input, resize: "vertical", minHeight: 120, margin: 0, border: "none", background: "transparent" }}
+            />
+          )}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap", padding: "0 2px 2px", marginTop: richNotes ? 8 : 0 }}>
             <span style={{ fontSize: 11.5, color: C.textFaint }}>Imágenes o documentos · máx. 1.5 MB · 5 archivos</span>
             <button
               type="button"
@@ -5315,18 +6386,20 @@ function TaskDetailModal({ C, task, assignees, initiatives, onClose, onSave, onD
         </div>
         {attachError && <div style={{ fontSize: 12.5, color: C.danger, marginTop: 8 }}>{attachError}</div>}
 
-        <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12, fontSize: 13, color: C.textMuted, cursor: "pointer" }}>
-          <input
-            type="checkbox"
-            checked={blocked}
-            onChange={(e) => {
-              const next = e.target.checked;
-              setBlocked(next);
-              patchField({ blocked: next });
-            }}
-          />
-          Marcar como bloqueada
-        </label>
+        {!hideBlockedFlag && (
+          <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12, fontSize: 13, color: C.textMuted, cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={blocked}
+              onChange={(e) => {
+                const next = e.target.checked;
+                setBlocked(next);
+                patchField({ blocked: next });
+              }}
+            />
+            Marcar como bloqueada
+          </label>
+        )}
 
         <button
           onClick={handleSaveNotes}
@@ -5432,7 +6505,7 @@ function SideDrawer({ C, title, onClose, disableClose, children }) {
   );
 }
 
-function AddTaskModal({ C, assignees, initiatives, defaultInitiativeId, onClose, onSave }) {
+function AddTaskModal({ C, assignees, initiatives, defaultInitiativeId, hideInitiative, hideTaskType, richNotes, onClose, onSave }) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [initiativeId, setInitiativeId] = useState(defaultInitiativeId || "");
@@ -5482,9 +6555,9 @@ function AddTaskModal({ C, assignees, initiatives, defaultInitiativeId, onClose,
       onSave({
         title: title.trim(),
         description: description.trim(),
-        initiativeId: initiativeId || null,
+        initiativeId: hideInitiative ? null : initiativeId || null,
         attachments,
-        type,
+        type: hideTaskType ? "Task" : type,
         assignee: finalAssignee,
         status,
         dueDate: dueDate || null,
@@ -5527,24 +6600,26 @@ function AddTaskModal({ C, assignees, initiatives, defaultInitiativeId, onClose,
           style={input}
         />
 
-        <label style={label}>Iniciativa</label>
-        <select value={initiativeId} onChange={(e) => setInitiativeId(e.target.value)} style={input}>
-          <option value="">Sin iniciativa</option>
-          {(initiatives || []).map((ini) => (
-            <option key={ini.id} value={ini.id}>
-              {ini.title}
-            </option>
-          ))}
-        </select>
+        {!hideInitiative && (
+          <>
+            <label style={label}>Iniciativa</label>
+            <select value={initiativeId} onChange={(e) => setInitiativeId(e.target.value)} style={input}>
+              <option value="">Sin iniciativa</option>
+              {(initiatives || []).map((ini) => (
+                <option key={ini.id} value={ini.id}>
+                  {ini.title}
+                </option>
+              ))}
+            </select>
+          </>
+        )}
 
-        <label style={label}>Tipo de elemento (opcional)</label>
-        <select value={type} onChange={(e) => setType(e.target.value)} style={input}>
-          {Object.entries(TASK_TYPES).map(([key, val]) => (
-            <option key={key} value={key}>
-              {val.label}
-            </option>
-          ))}
-        </select>
+        {!hideTaskType && (
+          <>
+            <label style={label}>Etiqueta</label>
+            <TaskTypeSelect C={C} value={type} fieldStyle={input} onChange={setType} />
+          </>
+        )}
 
         <label style={label}>Estado</label>
         <select value={status} onChange={(e) => setStatus(e.target.value)} style={input}>
@@ -5587,14 +6662,36 @@ function AddTaskModal({ C, assignees, initiatives, defaultInitiativeId, onClose,
             background: dropActive ? C.surfaceRaised : "transparent",
           }}
         >
-          <textarea
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            rows={4}
-            placeholder="Detalles o contexto. Arrastra aquí imágenes o documentos."
-            style={{ ...input, resize: "vertical", minHeight: 88, margin: 0, border: "none", background: "transparent" }}
-          />
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap", padding: "0 2px 2px" }}>
+          {richNotes ? (
+            <TaskNotesField
+              C={C}
+              value={description}
+              onChange={setDescription}
+              notesResetKey="new-task"
+              onPersistBeforeView={() => Promise.resolve()}
+              editorMinHeight={180}
+              placeholder="Notas en markdown. Usa **negrita**, listas y bloques ```mermaid```."
+            />
+          ) : (
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              rows={4}
+              placeholder="Detalles o contexto. Arrastra aquí imágenes o documentos."
+              style={{ ...input, resize: "vertical", minHeight: 88, margin: 0, border: "none", background: "transparent" }}
+            />
+          )}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 8,
+              flexWrap: "wrap",
+              padding: "0 2px 2px",
+              marginTop: richNotes ? 8 : 0,
+            }}
+          >
             <span style={{ fontSize: 11.5, color: C.textFaint }}>Imágenes o documentos · máx. 1.5 MB · 5 archivos</span>
             <button
               type="button"

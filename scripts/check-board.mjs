@@ -2,6 +2,7 @@
  * Contrato de /api/board: la lectura del tablero no reenvía adjuntos,
  * responde 304 si no cambió y un guardado no borra los archivos ya guardados.
  */
+process.env.BOARD_STORE = "gist";
 process.env.GIST_ID = "gist-test";
 process.env.GITHUB_TOKEN = "token-test";
 
@@ -86,7 +87,11 @@ resetBoardCache();
 const beforeProbe = calls.length;
 const probeRes = makeRes();
 await handler(makeReq("GET", { query: { probe: "1" } }), probeRes);
-assert("probe responde ok sin leer el gist", probeRes.statusCode === 200 && probeRes.body === '{"ok":true}' && calls.length === beforeProbe);
+const probeJson = probeRes.body ? JSON.parse(probeRes.body) : {};
+assert(
+  "probe responde ok sin leer el gist",
+  probeRes.statusCode === 200 && probeJson.ok === true && calls.length === beforeProbe
+);
 
 const first = makeRes();
 await handler(makeReq("GET"), first);

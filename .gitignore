@@ -5,3 +5,6 @@ dist
 .env
 .env.*
 data/board.json
+data/fliipa-kanban.sqlite
+data/*.sqlite
+exports/
