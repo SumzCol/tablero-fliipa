@@ -1,4 +1,4 @@
-import { SEED_MEMBERS } from "../src/shared/lib/seedMembers.ts";
+import { SEED_MEMBERS } from "./seedMembers.js";
 
 export const ACCESS_KEY = "fliipa-kanban:access";
 export const MEMBERS_KEY = "fliipa-kanban:members";

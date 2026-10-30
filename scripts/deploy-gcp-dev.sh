@@ -52,6 +52,11 @@ echo "==> Docker auth (gcr.io)"
 gcloud auth configure-docker gcr.io --quiet >/dev/null 2>&1 || true
 
 echo "==> Build imagen ${IMAGE}"
+export PATH="/usr/bin:/usr/local/bin:${PATH}"
+if ! command -v docker >/dev/null 2>&1; then
+  echo "ERROR: docker no está en PATH (instala Docker o añade /usr/bin al PATH)."
+  exit 1
+fi
 docker build \
   --build-arg "VITE_BASE=${VITE_BASE}" \
   -t "$IMAGE" .
