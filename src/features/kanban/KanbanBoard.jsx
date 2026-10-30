@@ -950,7 +950,7 @@ function formatUpdated(ts) {
 }
 
 export default function KanbanBoard({ uiVariant = "classic", onUiVariantChange, authUser = null }) {
-  const { signOut, email: sessionEmail } = useAuth();
+  const { signOut, email: sessionEmail, authRequired } = useAuth();
   const isMinimal = uiVariant === "minimal";
   const [tasks, setTasks] = useState([]);
   const [loaded, setLoaded] = useState(false);
@@ -976,10 +976,12 @@ export default function KanbanBoard({ uiVariant = "classic", onUiVariantChange, 
   const [initiatives, setInitiatives] = useState([]);
   const [members, setMembers] = useState([]);
   const [membersOpen, setMembersOpen] = useState(false);
-  const isBoardAdmin = useMemo(
-    () => (authUser ? isAuthUserAdmin(authUser, members) : true),
-    [authUser, members]
-  );
+  const membersHydrated = useMemo(() => hydrateBoardMembers(members), [members]);
+  const isBoardAdmin = useMemo(() => {
+    if (!authRequired) return true;
+    if (!authUser && !sessionEmail) return false;
+    return isAuthUserAdmin(authUser, membersHydrated, sessionEmail);
+  }, [authRequired, authUser, sessionEmail, membersHydrated]);
   const [deletedTaskIds, setDeletedTaskIds] = useState({});
   const [deletedInitIds, setDeletedInitIds] = useState({});
   const [deletedMemberIds, setDeletedMemberIds] = useState({});
@@ -3251,8 +3253,9 @@ export default function KanbanBoard({ uiVariant = "classic", onUiVariantChange, 
           tasks={tasks}
           initiatives={initiatives}
           legacyNames={legacyAssigneeNames}
-          readOnly={!!authUser && !isBoardAdmin}
-          canEditAccess={isBoardAdmin}
+          readOnly={authRequired && !!authUser && !isBoardAdmin}
+          showAccessPanel={authRequired || !authUser}
+          canEditAccess={!authRequired || isBoardAdmin}
           onAdd={addMember}
           onRename={renameMember}
           onRemove={removeMember}
@@ -5255,6 +5258,7 @@ function ManageMembersModal({
   initiatives,
   legacyNames,
   readOnly,
+  showAccessPanel,
   canEditAccess,
   onAdd,
   onRename,
@@ -5276,7 +5280,7 @@ function ManageMembersModal({
 
   useEffect(() => {
     if (accessDirtyRef.current || accessBusy) return;
-    setAccessRows(rowsFromMembers(members));
+    setAccessRows(rowsFromMembers(hydrateBoardMembers(members)));
   }, [members, accessBusy]);
 
   const allowlistCount = useMemo(
@@ -5424,7 +5428,7 @@ function ManageMembersModal({
           border: `1px solid ${C.border}`,
           borderRadius: 12,
           width: "100%",
-          maxWidth: canEditAccess ? 760 : 480,
+          maxWidth: showAccessPanel ? 760 : 480,
           padding: 20,
           maxHeight: "84vh",
           overflowY: "auto",
@@ -5441,14 +5445,16 @@ function ManageMembersModal({
           </button>
         </div>
         <div style={{ fontSize: 12.5, color: C.textMuted, marginBottom: 14, lineHeight: 1.5 }}>
-          {canEditAccess
+          {showAccessPanel && canEditAccess
             ? `Personas del tablero y allowlist Google (${allowlistCount} correos @sumz.co). Edita nombre, correo, alias y rol; guarda al final.`
-            : readOnly
-              ? "Responsables del tablero (solo lectura). Un admin gestiona correos y allowlist."
-              : "Personas asignables en el tablero (solo nombre)."}
+            : showAccessPanel
+              ? `Allowlist Google (${allowlistCount} correos). Solo un admin puede editar; tú ves la lista en solo lectura.`
+              : readOnly
+                ? "Responsables del tablero (solo lectura)."
+                : "Personas asignables en el tablero (solo nombre)."}
         </div>
 
-        {canEditAccess && (
+        {showAccessPanel && (
           <div style={{ marginBottom: 16 }}>
             {accessRows.map((row) => {
               const n = countFor(row.name);
@@ -5470,6 +5476,8 @@ function ManageMembersModal({
                     <input
                       style={{ ...accessInput, marginTop: 3 }}
                       value={row.name}
+                      readOnly={!canEditAccess}
+                      disabled={!canEditAccess}
                       onChange={(e) => updateAccessRow(row.id, { name: e.target.value })}
                     />
                   </label>
@@ -5478,6 +5486,8 @@ function ManageMembersModal({
                     <input
                       style={{ ...accessInput, marginTop: 3 }}
                       value={row.email || ""}
+                      readOnly={!canEditAccess}
+                      disabled={!canEditAccess}
                       onChange={(e) => updateAccessRow(row.id, { email: e.target.value })}
                       placeholder="nombre@sumz.co"
                     />
@@ -5487,6 +5497,8 @@ function ManageMembersModal({
                     <input
                       style={{ ...accessInput, marginTop: 3 }}
                       value={row.aliasesText || ""}
+                      readOnly={!canEditAccess}
+                      disabled={!canEditAccess}
                       onChange={(e) => updateAccessRow(row.id, { aliasesText: e.target.value })}
                       placeholder="variantes en tareas"
                     />
@@ -5496,6 +5508,7 @@ function ManageMembersModal({
                     <select
                       style={{ ...accessInput, marginTop: 3 }}
                       value={row.role === "admin" ? "admin" : "member"}
+                      disabled={!canEditAccess}
                       onChange={(e) => updateAccessRow(row.id, { role: e.target.value })}
                     >
                       <option value="member">member</option>
@@ -5503,18 +5516,23 @@ function ManageMembersModal({
                     </select>
                   </label>
                   <span style={{ fontSize: 11, color: C.textFaint, marginTop: 22, textAlign: "center" }}>{n}</span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setConfirmRemove({ id: row.id, name: row.name || row.email || "usuario", count: n });
-                    }}
-                    style={{ ...smallDangerBtn, marginTop: 18 }}
-                  >
-                    Quitar
-                  </button>
+                  {canEditAccess ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setConfirmRemove({ id: row.id, name: row.name || row.email || "usuario", count: n });
+                      }}
+                      style={{ ...smallDangerBtn, marginTop: 18 }}
+                    >
+                      Quitar
+                    </button>
+                  ) : (
+                    <span />
+                  )}
                 </div>
               );
             })}
+            {canEditAccess && (
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
               <button type="button" onClick={addAccessRow} style={{ ...accessInput, width: "auto", cursor: "pointer" }}>
                 + Persona
@@ -5537,11 +5555,12 @@ function ManageMembersModal({
                 {accessBusy ? "Guardando…" : "Guardar allowlist"}
               </button>
             </div>
+            )}
             {accessError && <div style={{ fontSize: 12, color: C.danger, marginTop: 8 }}>{accessError}</div>}
           </div>
         )}
 
-        {!readOnly && !canEditAccess && (
+        {!readOnly && !showAccessPanel && (
           <>
             <div style={{ display: "flex", gap: 8, marginBottom: 4 }}>
               <input
@@ -5565,10 +5584,10 @@ function ManageMembersModal({
         )}
 
         <div style={{ marginTop: 12, marginBottom: legacyNames && legacyNames.length ? 18 : 0 }}>
-          {!canEditAccess && members.length === 0 && (
+          {!showAccessPanel && members.length === 0 && (
             <div style={{ fontSize: 13, color: C.textFaint, padding: "10px 0" }}>Todavía no hay nadie en la lista.</div>
           )}
-          {!canEditAccess &&
+          {!showAccessPanel &&
             members.map((m) => {
             const isEditing = editingId === m.id;
             const n = countFor(m.name);
@@ -5644,7 +5663,7 @@ function ManageMembersModal({
               </div>
             );
           })}
-          {!canEditAccess && editError && <div style={{ fontSize: 12, color: C.danger, marginTop: 4 }}>{editError}</div>}
+          {!showAccessPanel && editError && <div style={{ fontSize: 12, color: C.danger, marginTop: 4 }}>{editError}</div>}
         </div>
 
         {confirmRemove && (

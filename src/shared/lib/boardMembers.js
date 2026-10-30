@@ -48,12 +48,19 @@ export function memberForAuthUser(user, members = membersRef) {
   return (members || []).find((m) => String(m.email || "").trim().toLowerCase() === email) || null;
 }
 
-export function isAuthUserAdmin(user, members = membersRef) {
-  const m = memberForAuthUser(user, members);
-  if (m?.role === "admin") return true;
-  const email = String(user?.email || "")
+export function authUserEmail(user, fallbackEmail = "") {
+  return String(user?.email || fallbackEmail || "")
     .trim()
     .toLowerCase();
+}
+
+export function isAuthUserAdmin(user, members = membersRef, fallbackEmail = "") {
+  const email = authUserEmail(user, fallbackEmail);
   if (!email) return false;
+  const m =
+    memberForAuthUser(user, members) ||
+    (members || []).find((x) => String(x.email || "").trim().toLowerCase() === email) ||
+    null;
+  if (m?.role === "admin") return true;
   return SEED_MEMBERS.some((s) => s.role === "admin" && s.email === email);
 }
