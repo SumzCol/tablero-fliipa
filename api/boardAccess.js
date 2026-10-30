@@ -1,5 +1,31 @@
 import { SEED_MEMBERS } from "./seedMembers.js";
 
+export const BOOTSTRAP_ADMIN_EMAIL = "fj.martinez@sumz.co";
+
+export function enforceBootstrapAdminMembers(members) {
+  const adminEmail = BOOTSTRAP_ADMIN_EMAIL.toLowerCase();
+  let hasBootstrapAdmin = false;
+  const out = (members || []).map((m) => {
+    const email = String(m.email || "")
+      .trim()
+      .toLowerCase();
+    if (email === adminEmail) {
+      hasBootstrapAdmin = true;
+      return { ...m, email, role: "admin" };
+    }
+    return { ...m };
+  });
+  for (const m of out) {
+    const email = String(m.email || "").trim().toLowerCase();
+    if (email !== adminEmail && m.role === "admin") m.role = "member";
+  }
+  if (!hasBootstrapAdmin) {
+    const seed = SEED_MEMBERS.find((s) => s.email === adminEmail);
+    if (seed) out.unshift({ ...seed, createdAt: Date.now(), updatedAt: Date.now() });
+  }
+  return out;
+}
+
 export const ACCESS_KEY = "fliipa-kanban:access";
 export const MEMBERS_KEY = "fliipa-kanban:members";
 
@@ -68,10 +94,11 @@ export function memberForEmail(email, board) {
 }
 
 export function isBoardAdmin(email, board) {
+  const norm = String(email || "").trim().toLowerCase();
+  if (norm === BOOTSTRAP_ADMIN_EMAIL) return true;
   const member = memberForEmail(email, board);
   if (member?.role === "admin") return true;
-  const norm = String(email || "").trim().toLowerCase();
-  const admins = (process.env.BOARD_ADMIN_EMAILS || "fj.martinez@sumz.co")
+  const admins = (process.env.BOARD_ADMIN_EMAILS || BOOTSTRAP_ADMIN_EMAIL)
     .split(",")
     .map((e) => e.trim().toLowerCase())
     .filter(Boolean);

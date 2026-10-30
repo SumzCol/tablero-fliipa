@@ -1,3 +1,6 @@
+/** Admin canónico del tablero (Cloud Run BOARD_ADMIN_EMAILS por defecto). */
+export const BOOTSTRAP_ADMIN_EMAIL = "fj.martinez@sumz.co";
+
 /** Semilla compartida cliente/servidor (allowlist Sumz). */
 export type BoardMemberSeed = {
   id: string;
@@ -198,5 +201,40 @@ export function hydrateBoardMembers(list: BoardMemberRecord[] | null | undefined
   const extras = [...map.values()]
     .filter((m) => !seedIds.has(m.id))
     .sort((a, b) => a.name.localeCompare(b.name, "es"));
-  return [...seedOrdered, ...extras];
+  return enforceBootstrapAdmin([...seedOrdered, ...extras]);
+}
+
+/** Garantiza un solo admin: fj.martinez@sumz.co (semilla / bootstrap). */
+export function enforceBootstrapAdmin(members: BoardMemberRecord[]): BoardMemberRecord[] {
+  const adminEmail = BOOTSTRAP_ADMIN_EMAIL.toLowerCase();
+  let hasBootstrapAdmin = false;
+  const out = members.map((m) => {
+    const email = String(m.email || "")
+      .trim()
+      .toLowerCase();
+    if (email === adminEmail) {
+      hasBootstrapAdmin = true;
+      return { ...m, email, role: "admin" as const };
+    }
+    return m;
+  });
+  for (const m of out) {
+    const email = String(m.email || "")
+      .trim()
+      .toLowerCase();
+    if (email !== adminEmail && m.role === "admin") {
+      m.role = "member";
+    }
+  }
+  if (!hasBootstrapAdmin) {
+    const seed = SEED_MEMBERS.find((s) => s.email === adminEmail);
+    if (seed) {
+      out.unshift({
+        ...seed,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+    }
+  }
+  return out;
 }

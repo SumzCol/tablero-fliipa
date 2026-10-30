@@ -1,6 +1,6 @@
 import { foldName, resolvePersonNick } from "@/integrations/plane";
 import { LEGACY_PERSON_LABEL_MAP } from "@/shared/lib/memberMaps";
-import { SEED_MEMBERS } from "@/shared/lib/seedMembers";
+import { BOOTSTRAP_ADMIN_EMAIL, SEED_MEMBERS } from "@/shared/lib/seedMembers";
 
 let membersRef = [];
 
@@ -62,5 +62,6 @@ export function isAuthUserAdmin(user, members = membersRef, fallbackEmail = "") 
     (members || []).find((x) => String(x.email || "").trim().toLowerCase() === email) ||
     null;
   if (m?.role === "admin") return true;
+  if (email === BOOTSTRAP_ADMIN_EMAIL) return true;
   return SEED_MEMBERS.some((s) => s.role === "admin" && s.email === email);
 }

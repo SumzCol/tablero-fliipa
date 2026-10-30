@@ -12,6 +12,7 @@ import {
 } from "../api/boardAccess.js";
 import { readBoardBlob, writeBoardBlob } from "../api/boardStore.js";
 import { LEGACY_PERSON_LABEL_MAP, REMOVED_PERSON_LABELS } from "../src/shared/lib/memberMaps.ts";
+import { enforceBootstrapAdmin } from "../src/shared/lib/seedMembers.ts";
 
 process.env.BOARD_STORE = process.env.BOARD_STORE || "firestore";
 process.env.GOOGLE_CLOUD_PROJECT =
@@ -44,7 +45,9 @@ function mapPersonLabel(name) {
 }
 
 const now = Date.now();
-const members = SEED_MEMBERS.map((m) => normalizeMemberRecord({ ...m, updatedAt: now }, now));
+const members = enforceBootstrapAdmin(
+  SEED_MEMBERS.map((m) => normalizeMemberRecord({ ...m, updatedAt: now }, now))
+);
 const access = buildAccessPayload(members);
 
 function trashEntry(item) {
