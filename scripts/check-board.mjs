@@ -3,6 +3,7 @@
  * responde 304 si no cambió y un guardado no borra los archivos ya guardados.
  */
 process.env.BOARD_STORE = "gist";
+process.env.BOARD_REQUIRE_AUTH = "0";
 process.env.GIST_ID = "gist-test";
 process.env.GITHUB_TOKEN = "token-test";
 

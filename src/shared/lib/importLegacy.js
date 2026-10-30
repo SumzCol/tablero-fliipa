@@ -1,4 +1,4 @@
-import { foldName, resolvePersonNick } from "./plane.js";
+import { foldName, resolvePersonNick } from "../../integrations/plane.js";
 
 const AVATAR_COLORS = ["#3EE0B4", "#8B8CFF", "#5B8CFF", "#F0C14B", "#F07178", "#B48EDE"];
 

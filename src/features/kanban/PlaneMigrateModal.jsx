@@ -7,7 +7,7 @@ import {
   listProjects,
   migrateToPlane,
   parseWorkspaceInput,
-} from "./plane";
+} from "@/integrations/plane";
 
 const SETTINGS_KEY = "fliipa-kanban:plane-settings";
 

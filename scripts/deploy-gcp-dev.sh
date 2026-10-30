@@ -54,11 +54,10 @@ gcloud auth configure-docker gcr.io --quiet >/dev/null 2>&1 || true
 echo "==> Build imagen ${IMAGE}"
 docker build \
   --build-arg "VITE_BASE=${VITE_BASE}" \
-  --build-arg "VITE_FLIIPA_BOARD_WRITE_KEY=${BOARD_WRITE_KEY}" \
   -t "$IMAGE" .
 docker push "$IMAGE"
 
-ENV_VARS="BOARD_STORE=firestore,GCP_PROJECT_ID=${PROJECT_ID},FIRESTORE_COLLECTION=fliipa_kanban,FIRESTORE_DOC_ID=shared,APP_BASE_PATH=${APP_BASE_PATH},BOARD_WRITE_KEY=${BOARD_WRITE_KEY}"
+BOOTSTRAP_EMAILS="${BOARD_BOOTSTRAP_EMAILS:-mf.herazo@sumz.co,fj.martinez@sumz.co,da.aviles@sumz.co,a.suarez@sumz.co,if.aponte@sumz.co,wa.bohorquez@sumz.co,ja.blanco@sumz.co,n.ibagon@sumz.co}"
 
 echo "==> Cloud Run deploy"
 gcloud run deploy "$SERVICE" \
@@ -72,7 +71,7 @@ gcloud run deploy "$SERVICE" \
   --min-instances=0 \
   --max-instances=3 \
   --concurrency=80 \
-  --set-env-vars="$ENV_VARS"
+  --set-env-vars="^:^BOARD_STORE=firestore:GCP_PROJECT_ID=${PROJECT_ID}:FIRESTORE_COLLECTION=fliipa_kanban:FIRESTORE_DOC_ID=shared:APP_BASE_PATH=${APP_BASE_PATH}:BOARD_WRITE_KEY=${BOARD_WRITE_KEY}:BOARD_REQUIRE_AUTH=1:BOARD_BOOTSTRAP_EMAILS=${BOOTSTRAP_EMAILS}"
 
 URL="$(gcloud run services describe "$SERVICE" --region="$REGION" --project="$PROJECT_ID" --format='value(status.url)')"
 echo ""

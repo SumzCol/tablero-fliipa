@@ -1,12 +1,22 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import KaneoMigrateModal from "./KaneoMigrateModal";
-import { mergeImportedInitiatives, parseImportedBoard } from "./importLegacy";
-import { foldName, resolvePersonNick } from "./plane";
-import { MINIMAL_PAGE_BG } from "./uiMode";
+import { mergeImportedInitiatives, parseImportedBoard } from "@/shared/lib/importLegacy";
+import { foldName } from "@/integrations/plane";
+import {
+  findMemberByLabel,
+  resolveBoardPersonNick,
+  sameBoardPerson,
+  setBoardMembersRegistry,
+  isAuthUserAdmin,
+} from "@/shared/lib/boardMembers";
+import { hydrateBoardMembers, mergeTwoMemberRecords } from "@/shared/lib/seedMembers";
+import { rowsFromMembers, validateAccessMembers } from "@/shared/lib/accessMembers";
+import { useAuth } from "@/features/auth/AuthProvider";
+import { MINIMAL_PAGE_BG } from "@/shared/lib/uiMode";
 import MinimalFilterAccordion from "./MinimalFilterAccordion";
 import { taskMatchesMinimalFilterRoot } from "./minimalFilters";
 import { minimalFilterDemoTasks } from "./minimalFilterDemoData";
-import { isLocalDevEnvironment } from "./env";
+import { isLocalDevEnvironment } from "@/shared/lib/env";
 import TaskNotesField, { CopyableTaskIdRow } from "./TaskNotesField.jsx";
 import MermaidWizardModal from "./MermaidWizardModal.jsx";
 
@@ -390,9 +400,11 @@ function idsMatch(a, b) {
 }
 
 function samePerson(a, b) {
-  if (!a || !b) return false;
-  if (a === b) return true;
-  return foldName(resolvePersonNick(a)) === foldName(resolvePersonNick(b));
+  return sameBoardPerson(a, b);
+}
+
+function resolvePersonNick(name) {
+  return resolveBoardPersonNick(name);
 }
 
 function textMatches(query, ...parts) {
@@ -422,6 +434,7 @@ const TASKS_KEY = "fliipa-kanban:tasks";
 const THEME_KEY = "fliipa-kanban:theme";
 const INITIATIVES_KEY = "fliipa-kanban:initiatives";
 const MEMBERS_KEY = "fliipa-kanban:members";
+const ACCESS_KEY = "fliipa-kanban:access";
 const DELETED_TASKS_KEY = "fliipa-kanban:deleted-tasks";
 const DELETED_INIT_KEY = "fliipa-kanban:deleted-initiatives";
 const DELETED_MEMBERS_KEY = "fliipa-kanban:deleted-members";
@@ -524,6 +537,27 @@ function mergeRecords(local, remote, deleted) {
   return Array.from(map.values());
 }
 
+function mergeMemberRecords(local, remote, deleted) {
+  const map = new Map();
+  (remote || []).forEach((item) => {
+    if (item && item.id && !deleted[item.id]) map.set(item.id, item);
+  });
+  (local || []).forEach((item) => {
+    if (!item || !item.id || deleted[item.id]) return;
+    const current = map.get(item.id);
+    map.set(item.id, current ? mergeTwoMemberRecords(item, current) : item);
+  });
+  return hydrateBoardMembers(Array.from(map.values()));
+}
+
+function assigneeKnownToMembers(label, members) {
+  if (!label) return true;
+  if (findMemberByLabel(label, members)) return true;
+  const nick = resolveBoardPersonNick(label, members);
+  if (nick && findMemberByLabel(nick, members)) return true;
+  return members.some((m) => foldName(m.name) === foldName(nick));
+}
+
 function parseList(result) {
   if (!result || result.value == null || result.value === "") return null;
   try {
@@ -549,13 +583,7 @@ function parseDeleted(result) {
 // administra desde "Usuarios" — así no quedan responsables duplicados
 // por escribirlos distinto en cada tarea.
 function defaultMembers() {
-  const now = Date.now();
-  return ROSTER.map((name, i) => ({
-    id: "m-" + foldName(name).replace(/[^a-z0-9]+/g, "-"),
-    name,
-    createdAt: now + i,
-    updatedAt: now + i,
-  }));
+  return hydrateBoardMembers([]);
 }
 
 function trashEntry(item) {
@@ -921,7 +949,8 @@ function formatUpdated(ts) {
   return `${datePart}, ${timePart} COT`;
 }
 
-export default function KanbanBoard({ uiVariant = "classic", onUiVariantChange }) {
+export default function KanbanBoard({ uiVariant = "classic", onUiVariantChange, authUser = null }) {
+  const { signOut, email: sessionEmail } = useAuth();
   const isMinimal = uiVariant === "minimal";
   const [tasks, setTasks] = useState([]);
   const [loaded, setLoaded] = useState(false);
@@ -947,6 +976,10 @@ export default function KanbanBoard({ uiVariant = "classic", onUiVariantChange }
   const [initiatives, setInitiatives] = useState([]);
   const [members, setMembers] = useState([]);
   const [membersOpen, setMembersOpen] = useState(false);
+  const isBoardAdmin = useMemo(
+    () => (authUser ? isAuthUserAdmin(authUser, members) : true),
+    [authUser, members]
+  );
   const [deletedTaskIds, setDeletedTaskIds] = useState({});
   const [deletedInitIds, setDeletedInitIds] = useState({});
   const [deletedMemberIds, setDeletedMemberIds] = useState({});
@@ -1067,7 +1100,7 @@ export default function KanbanBoard({ uiVariant = "classic", onUiVariantChange }
         setDeletedMemberIds(deletedMemberIds);
         setTasks(mergeRecords(backupTasks, seedTasks(), deletedTaskIds));
         setInitiatives(mergeRecords(backupInits, [], deletedInitIds));
-        setMembers(mergeRecords(backupMembers, defaultMembers(), deletedMemberIds));
+        setMembers(mergeMemberRecords(backupMembers, defaultMembers(), deletedMemberIds));
         setLoaded(true);
         return;
       }
@@ -1078,7 +1111,9 @@ export default function KanbanBoard({ uiVariant = "classic", onUiVariantChange }
         const initialTasks = hadRemoteTasks ? remote.tasks : seedTasks();
         const initialInits = remote.initiatives || [];
         const hadRemoteMembers = remote.members && remote.members.length > 0;
-        const initialMembers = hadRemoteMembers ? remote.members : defaultMembers();
+        const initialMembers = hadRemoteMembers
+          ? hydrateBoardMembers(remote.members)
+          : defaultMembers();
 
         // Unimos las marcas de eliminado (si algo se borró localmente justo
         // antes de recargar, ese borrado también se conserva) y fusionamos
@@ -1090,7 +1125,7 @@ export default function KanbanBoard({ uiVariant = "classic", onUiVariantChange }
         const deletedMemberIds = { ...remote.deletedMemberIds, ...backupDeletedMembers };
         const mergedTasks = mergeRecords(backupTasks, initialTasks, deletedTaskIds);
         const mergedInits = mergeRecords(backupInits, initialInits, deletedInitIds);
-        const mergedMembers = mergeRecords(backupMembers, initialMembers, deletedMemberIds);
+        const mergedMembers = mergeMemberRecords(backupMembers, initialMembers, deletedMemberIds);
 
         setDeletedTaskIds(deletedTaskIds);
         setDeletedInitIds(deletedInitIds);
@@ -1119,7 +1154,7 @@ export default function KanbanBoard({ uiVariant = "classic", onUiVariantChange }
           setDeletedMemberIds(deletedMemberIds);
           setTasks(mergeRecords(backupTasks, seedTasks(), deletedTaskIds));
           setInitiatives(mergeRecords(backupInits, [], deletedInitIds));
-          setMembers(mergeRecords(backupMembers, defaultMembers(), deletedMemberIds));
+          setMembers(mergeMemberRecords(backupMembers, defaultMembers(), deletedMemberIds));
         }
       } finally {
         if (!cancelled) setLoaded(true);
@@ -1159,7 +1194,7 @@ export default function KanbanBoard({ uiVariant = "classic", onUiVariantChange }
           lastDeletedMembersRef.current = JSON.stringify(deleted);
           setMembers((prev) => {
             const pending = JSON.stringify(prev) !== lastMembersRef.current;
-            const merged = mergeRecords(prev, remote.members, deleted);
+            const merged = mergeMemberRecords(prev, remote.members, deleted);
             if (!pending) lastMembersRef.current = JSON.stringify(merged);
             return merged;
           });
@@ -1332,6 +1367,9 @@ export default function KanbanBoard({ uiVariant = "classic", onUiVariantChange }
     writeBackup(BACKUP_MEMBERS_KEY, members);
   }, [members, loaded]);
   useEffect(() => {
+    setBoardMembersRegistry(members);
+  }, [members]);
+  useEffect(() => {
     if (!loaded) return;
     writeBackup(BACKUP_DELETED_TASKS_KEY, deletedTaskIds);
   }, [deletedTaskIds, loaded]);
@@ -1475,6 +1513,36 @@ export default function KanbanBoard({ uiVariant = "classic", onUiVariantChange }
     setAssigneeFilter((prev) => (prev === oldName ? targetName : prev));
   }
 
+  async function saveAccessAdmin(payload) {
+    const nextMembers = payload.members || members;
+    const prevById = new Map(members.map((m) => [m.id, m]));
+    const now = Date.now();
+    for (const m of nextMembers) {
+      const prev = prevById.get(m.id);
+      if (!prev || prev.name === m.name || !prev.name) continue;
+      const oldName = prev.name;
+      const newName = m.name;
+      setTasks((prevTasks) =>
+        prevTasks.map((t) => (t.assignee === oldName ? { ...t, assignee: newName, updatedAt: now } : t))
+      );
+      setInitiatives((prevInits) =>
+        prevInits.map((i) => (i.owner === oldName ? { ...i, owner: newName, updatedAt: now } : i))
+      );
+      setAssigneeFilter((prev) => (prev === oldName ? newName : prev));
+    }
+    const access =
+      payload.access ||
+      {
+        allowedEmails: nextMembers.map((m) => String(m.email || "").trim().toLowerCase()).filter(Boolean),
+        updatedAt: Date.now(),
+      };
+    const hydrated = hydrateBoardMembers(nextMembers);
+    setMembers(hydrated);
+    lastMembersRef.current = JSON.stringify(hydrated);
+    await setWithRetry(MEMBERS_KEY, JSON.stringify(hydrated), true);
+    await setWithRetry(ACCESS_KEY, JSON.stringify(access), true);
+  }
+
   function applyImportedSnapshot(parsed) {
     if (!parsed || typeof parsed !== "object") throw new Error("Formato inválido");
     let incomingTasks = Array.isArray(parsed.tasks) ? parsed.tasks : null;
@@ -1527,22 +1595,21 @@ export default function KanbanBoard({ uiVariant = "classic", onUiVariantChange }
   }, [memberNames, boardPool]);
 
   const legacyAssigneeNames = useMemo(() => {
-    const known = new Set(memberNames.map((n) => foldName(n)));
     const counts = new Map();
     tasks.forEach((t) => {
-      if (t.assignee && !known.has(foldName(t.assignee))) {
+      if (t.assignee && !assigneeKnownToMembers(t.assignee, members)) {
         counts.set(t.assignee, (counts.get(t.assignee) || 0) + 1);
       }
     });
     initiatives.forEach((i) => {
-      if (i.owner && !known.has(foldName(i.owner))) {
+      if (i.owner && !assigneeKnownToMembers(i.owner, members)) {
         counts.set(i.owner, (counts.get(i.owner) || 0) + 1);
       }
     });
     return Array.from(counts.entries())
       .map(([name, count]) => ({ name, count }))
       .sort((a, b) => b.count - a.count);
-  }, [tasks, initiatives, memberNames]);
+  }, [tasks, initiatives, members]);
 
   const scopedTasks = useMemo(() => {
     if (!initiativeFilter) return boardPool;
@@ -2323,6 +2390,10 @@ export default function KanbanBoard({ uiVariant = "classic", onUiVariantChange }
           trashCount={trashList(deletedTaskIds).length + trashList(deletedInitIds).length}
           onOpenMermaidWizard={() => setMermaidWizardOpen(true)}
           onOpenMembers={() => setMembersOpen(true)}
+          authEmail={sessionEmail || authUser?.email || ""}
+          isBoardAdmin={isBoardAdmin}
+          onOpenAccessAdmin={() => setMembersOpen(true)}
+          onSignOut={authUser ? signOut : null}
         />
         </div>
       )}
@@ -3180,10 +3251,13 @@ export default function KanbanBoard({ uiVariant = "classic", onUiVariantChange }
           tasks={tasks}
           initiatives={initiatives}
           legacyNames={legacyAssigneeNames}
+          readOnly={!!authUser && !isBoardAdmin}
+          canEditAccess={isBoardAdmin}
           onAdd={addMember}
           onRename={renameMember}
           onRemove={removeMember}
           onMerge={mergeLegacyName}
+          onSaveAccess={saveAccessAdmin}
           onClose={() => setMembersOpen(false)}
         />
       )}
@@ -3363,6 +3437,10 @@ function TopBar({
   trashCount,
   onOpenMermaidWizard,
   onOpenMembers,
+  authEmail,
+  isBoardAdmin,
+  onOpenAccessAdmin,
+  onSignOut,
 }) {
   const [shareStatus, setShareStatus] = useState(null);
   const shareTimerRef = useRef(null);
@@ -3483,6 +3561,47 @@ function TopBar({
           >
             Migrar a Kaneo
           </button>
+          {authEmail ? (
+            <span style={{ fontSize: 12, color: C.textMuted, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis" }}>
+              {authEmail}
+            </span>
+          ) : null}
+          {isBoardAdmin && onOpenAccessAdmin ? (
+            <button
+              type="button"
+              onClick={onOpenAccessAdmin}
+              style={{
+                background: C.accentSoft,
+                border: `1px solid ${C.accent}`,
+                color: C.accent,
+                borderRadius: 8,
+                padding: "5px 10px",
+                cursor: "pointer",
+                fontSize: 12,
+                fontWeight: 600,
+              }}
+              title="Allowlist Google, correos y roles (abre Usuarios)"
+            >
+              Acceso
+            </button>
+          ) : null}
+          {onSignOut ? (
+            <button
+              type="button"
+              onClick={onSignOut}
+              style={{
+                background: "none",
+                border: `1px solid ${C.border}`,
+                color: C.textMuted,
+                borderRadius: 8,
+                padding: "5px 10px",
+                cursor: "pointer",
+                fontSize: 12,
+              }}
+            >
+              Salir
+            </button>
+          ) : null}
           <button
             onClick={onOpenMembers}
             style={{
@@ -5129,13 +5248,41 @@ function TrashModal({ C, tasks, initiatives, onRestoreTask, onRestoreInitiative,
   );
 }
 
-function ManageMembersModal({ C, members, tasks, initiatives, legacyNames, onAdd, onRename, onRemove, onMerge, onClose }) {
+function ManageMembersModal({
+  C,
+  members,
+  tasks,
+  initiatives,
+  legacyNames,
+  readOnly,
+  canEditAccess,
+  onAdd,
+  onRename,
+  onRemove,
+  onMerge,
+  onSaveAccess,
+  onClose,
+}) {
   const [newName, setNewName] = useState("");
   const [addError, setAddError] = useState("");
   const [editingId, setEditingId] = useState(null);
   const [editName, setEditName] = useState("");
   const [editError, setEditError] = useState("");
   const [confirmRemove, setConfirmRemove] = useState(null);
+  const [accessRows, setAccessRows] = useState(() => rowsFromMembers(members));
+  const [accessError, setAccessError] = useState("");
+  const [accessBusy, setAccessBusy] = useState(false);
+  const accessDirtyRef = useRef(false);
+
+  useEffect(() => {
+    if (accessDirtyRef.current || accessBusy) return;
+    setAccessRows(rowsFromMembers(members));
+  }, [members, accessBusy]);
+
+  const allowlistCount = useMemo(
+    () => accessRows.map((r) => String(r.email || "").trim().toLowerCase()).filter(Boolean).length,
+    [accessRows]
+  );
 
   function countFor(name) {
     const t = (tasks || []).filter((x) => x.assignee === name).length;
@@ -5168,6 +5315,62 @@ function ManageMembersModal({ C, members, tasks, initiatives, legacyNames, onAdd
     setEditingId(null);
     setEditError("");
   }
+
+  function updateAccessRow(id, patch) {
+    accessDirtyRef.current = true;
+    setAccessRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  }
+
+  function addAccessRow() {
+    accessDirtyRef.current = true;
+    const now = Date.now();
+    setAccessRows((prev) => [
+      ...prev,
+      {
+        id: `m-new-${now}`,
+        name: "",
+        email: "",
+        role: "member",
+        aliases: [],
+        aliasesText: "",
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+  }
+
+  async function saveAccess() {
+    if (!onSaveAccess) return;
+    setAccessError("");
+    const result = validateAccessMembers(accessRows);
+    if (!result.ok) {
+      setAccessError(result.error);
+      return;
+    }
+    setAccessBusy(true);
+    try {
+      await onSaveAccess({
+        members: result.members,
+        access: { allowedEmails: result.allowedEmails, updatedAt: Date.now() },
+      });
+      accessDirtyRef.current = false;
+    } catch (e) {
+      setAccessError(e.message || "No se pudo guardar el acceso");
+    } finally {
+      setAccessBusy(false);
+    }
+  }
+
+  const accessInput = {
+    width: "100%",
+    boxSizing: "border-box",
+    padding: "6px 8px",
+    borderRadius: 8,
+    border: `1px solid ${C.border}`,
+    background: C.bg,
+    color: C.text,
+    fontSize: 12.5,
+  };
 
   const row = {
     display: "flex",
@@ -5221,7 +5424,7 @@ function ManageMembersModal({ C, members, tasks, initiatives, legacyNames, onAdd
           border: `1px solid ${C.border}`,
           borderRadius: 12,
           width: "100%",
-          maxWidth: 480,
+          maxWidth: canEditAccess ? 760 : 480,
           padding: 20,
           maxHeight: "84vh",
           overflowY: "auto",
@@ -5238,34 +5441,135 @@ function ManageMembersModal({ C, members, tasks, initiatives, legacyNames, onAdd
           </button>
         </div>
         <div style={{ fontSize: 12.5, color: C.textMuted, marginBottom: 14, lineHeight: 1.5 }}>
-          Esta es la lista de personas que se pueden asignar en el tablero. No hay contraseñas ni inicio de sesión:
-          es solo para que todos elijan siempre el mismo nombre y no queden responsables duplicados.
+          {canEditAccess
+            ? `Personas del tablero y allowlist Google (${allowlistCount} correos @sumz.co). Edita nombre, correo, alias y rol; guarda al final.`
+            : readOnly
+              ? "Responsables del tablero (solo lectura). Un admin gestiona correos y allowlist."
+              : "Personas asignables en el tablero (solo nombre)."}
         </div>
 
-        <div style={{ display: "flex", gap: 8, marginBottom: 4 }}>
-          <input
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                handleAdd();
-              }
-            }}
-            placeholder="Nombre de la persona"
-            style={{ ...inputStyle(C), flex: 1 }}
-          />
-          <button onClick={handleAdd} style={primaryBtn(C)}>
-            Agregar
-          </button>
-        </div>
-        {addError && <div style={{ fontSize: 12, color: C.danger, marginBottom: 10 }}>{addError}</div>}
+        {canEditAccess && (
+          <div style={{ marginBottom: 16 }}>
+            {accessRows.map((row) => {
+              const n = countFor(row.name);
+              return (
+                <div
+                  key={row.id}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "minmax(88px, 1fr) minmax(120px, 1.2fr) minmax(100px, 1fr) 72px 44px 52px auto",
+                    gap: 6,
+                    alignItems: "start",
+                    marginBottom: 8,
+                    paddingBottom: 8,
+                    borderBottom: `1px solid ${C.borderSoft}`,
+                  }}
+                >
+                  <label style={{ fontSize: 11, color: C.textMuted }}>
+                    Nombre
+                    <input
+                      style={{ ...accessInput, marginTop: 3 }}
+                      value={row.name}
+                      onChange={(e) => updateAccessRow(row.id, { name: e.target.value })}
+                    />
+                  </label>
+                  <label style={{ fontSize: 11, color: C.textMuted }}>
+                    Correo (allowlist)
+                    <input
+                      style={{ ...accessInput, marginTop: 3 }}
+                      value={row.email || ""}
+                      onChange={(e) => updateAccessRow(row.id, { email: e.target.value })}
+                      placeholder="nombre@sumz.co"
+                    />
+                  </label>
+                  <label style={{ fontSize: 11, color: C.textMuted }}>
+                    Alias
+                    <input
+                      style={{ ...accessInput, marginTop: 3 }}
+                      value={row.aliasesText || ""}
+                      onChange={(e) => updateAccessRow(row.id, { aliasesText: e.target.value })}
+                      placeholder="variantes en tareas"
+                    />
+                  </label>
+                  <label style={{ fontSize: 11, color: C.textMuted }}>
+                    Rol
+                    <select
+                      style={{ ...accessInput, marginTop: 3 }}
+                      value={row.role === "admin" ? "admin" : "member"}
+                      onChange={(e) => updateAccessRow(row.id, { role: e.target.value })}
+                    >
+                      <option value="member">member</option>
+                      <option value="admin">admin</option>
+                    </select>
+                  </label>
+                  <span style={{ fontSize: 11, color: C.textFaint, marginTop: 22, textAlign: "center" }}>{n}</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setConfirmRemove({ id: row.id, name: row.name || row.email || "usuario", count: n });
+                    }}
+                    style={{ ...smallDangerBtn, marginTop: 18 }}
+                  >
+                    Quitar
+                  </button>
+                </div>
+              );
+            })}
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
+              <button type="button" onClick={addAccessRow} style={{ ...accessInput, width: "auto", cursor: "pointer" }}>
+                + Persona
+              </button>
+              <button
+                type="button"
+                disabled={accessBusy}
+                onClick={saveAccess}
+                style={{
+                  padding: "8px 14px",
+                  borderRadius: 8,
+                  border: "none",
+                  background: C.accent,
+                  color: "#0b0d12",
+                  fontWeight: 600,
+                  cursor: accessBusy ? "wait" : "pointer",
+                  fontSize: 13,
+                }}
+              >
+                {accessBusy ? "Guardando…" : "Guardar allowlist"}
+              </button>
+            </div>
+            {accessError && <div style={{ fontSize: 12, color: C.danger, marginTop: 8 }}>{accessError}</div>}
+          </div>
+        )}
+
+        {!readOnly && !canEditAccess && (
+          <>
+            <div style={{ display: "flex", gap: 8, marginBottom: 4 }}>
+              <input
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    handleAdd();
+                  }
+                }}
+                placeholder="Nombre de la persona"
+                style={{ ...inputStyle(C), flex: 1 }}
+              />
+              <button onClick={handleAdd} style={primaryBtn(C)}>
+                Agregar
+              </button>
+            </div>
+            {addError && <div style={{ fontSize: 12, color: C.danger, marginBottom: 10 }}>{addError}</div>}
+          </>
+        )}
 
         <div style={{ marginTop: 12, marginBottom: legacyNames && legacyNames.length ? 18 : 0 }}>
-          {members.length === 0 && (
+          {!canEditAccess && members.length === 0 && (
             <div style={{ fontSize: 13, color: C.textFaint, padding: "10px 0" }}>Todavía no hay nadie en la lista.</div>
           )}
-          {members.map((m) => {
+          {!canEditAccess &&
+            members.map((m) => {
             const isEditing = editingId === m.id;
             const n = countFor(m.name);
             return (
@@ -5299,36 +5603,48 @@ function ManageMembersModal({ C, members, tasks, initiatives, legacyNames, onAdd
                     style={{ ...inputStyle(C), flex: 1, padding: "4px 8px" }}
                   />
                 ) : (
-                  <div style={{ flex: 1, fontSize: 13.5, color: C.text, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {m.name}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13.5, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {m.name}
+                      {m.role === "admin" ? " · admin" : ""}
+                    </div>
+                    {(m.email || (m.aliases && m.aliases.length > 0)) && (
+                      <div style={{ fontSize: 11, color: C.textFaint, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {[m.email, ...(m.aliases || [])].filter(Boolean).join(" · ")}
+                      </div>
+                    )}
                   </div>
                 )}
                 <span style={{ fontSize: 11, color: C.textFaint, flexShrink: 0 }}>
                   {n} {n === 1 ? "tarea" : "tareas"}
                 </span>
-                {isEditing ? (
-                  <>
-                    <button onClick={() => saveEdit(m.id)} style={smallGhostBtn}>
-                      Guardar
-                    </button>
-                    <button onClick={() => setEditingId(null)} style={smallGhostBtn}>
-                      Cancelar
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <button onClick={() => startEdit(m)} style={smallGhostBtn}>
-                      Renombrar
-                    </button>
-                    <button onClick={() => setConfirmRemove({ id: m.id, name: m.name, count: n })} style={smallDangerBtn}>
-                      Quitar
-                    </button>
-                  </>
-                )}
+                {!readOnly &&
+                  (isEditing ? (
+                    <>
+                      <button onClick={() => saveEdit(m.id)} style={smallGhostBtn}>
+                        Guardar
+                      </button>
+                      <button onClick={() => setEditingId(null)} style={smallGhostBtn}>
+                        Cancelar
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button onClick={() => startEdit(m)} style={smallGhostBtn}>
+                        Renombrar
+                      </button>
+                      <button
+                        onClick={() => setConfirmRemove({ id: m.id, name: m.name, count: n })}
+                        style={smallDangerBtn}
+                      >
+                        Quitar
+                      </button>
+                    </>
+                  ))}
               </div>
             );
           })}
-          {editError && <div style={{ fontSize: 12, color: C.danger, marginTop: 4 }}>{editError}</div>}
+          {!canEditAccess && editError && <div style={{ fontSize: 12, color: C.danger, marginTop: 4 }}>{editError}</div>}
         </div>
 
         {confirmRemove && (
@@ -5344,6 +5660,10 @@ function ManageMembersModal({ C, members, tasks, initiatives, legacyNames, onAdd
               <button
                 onClick={() => {
                   onRemove(confirmRemove.id);
+                  if (canEditAccess) {
+                    accessDirtyRef.current = true;
+                    setAccessRows((prev) => prev.filter((r) => r.id !== confirmRemove.id));
+                  }
                   setConfirmRemove(null);
                 }}
                 style={{ background: C.danger, border: "none", color: "#fff", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 12.5, fontWeight: 700 }}

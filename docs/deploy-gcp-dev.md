@@ -24,8 +24,8 @@ El tablero guarda un **blob JSON** (mismas claves que antes: `fliipa-kanban:task
 ## Desplegar
 
 ```bash
-chmod +x scripts/deploy-gcp-dev.sh
-GCP_PROJECT_ID=product-fintech-dev ./scripts/deploy-gcp-dev.sh
+npm run deploy
+# equivalente: GCP_PROJECT_ID=product-fintech-dev ./scripts/deploy-gcp-dev.sh
 ```
 
 El script crea la base **Firestore Native** en la región si aún no existe, genera o reutiliza `BOARD_WRITE_KEY` en `.env.gcp.local` (gitignored vía `.env.*`), configura `gcr.io` en Docker y despliega Cloud Run.
@@ -101,5 +101,24 @@ Usar solo la URL `*.run.app` del servicio. El cliente detecta el host y **no** c
 
 ## Seguridad
 
-- STG interno: `--allow-unauthenticated` como el resto de front STG.
-- Opcional: `BOARD_WRITE_KEY` + IAP / VPN si más adelante se expone fuera del equipo.
+- STG interno: `--allow-unauthenticated` en Cloud Run (el tablero exige **Firebase ID token** en GET/PUT).
+- Google Sign-In solo para los correos en allowlist (`fliipa-kanban:access` / miembros).
+- `BOARD_WRITE_KEY`: scripts (`import`, `seed:access`, smoke con header), no va en el build del front.
+- Activar Google en Firebase: ver [firebase-auth-setup.md](./firebase-auth-setup.md).
+
+## Acceso Sumz (8 personas, `@sumz.co`)
+
+| Nombre | Correo | Alias |
+| --- | --- | --- |
+| Mafe | mf.herazo@sumz.co | — |
+| Fran (admin) | fj.martinez@sumz.co | — |
+| Alejo | da.aviles@sumz.co | — |
+| Aleja | a.suarez@sumz.co | Ale Suárez |
+| Ivan | if.aponte@sumz.co | Iván Aponte |
+| William | wa.bohorquez@sumz.co | Alejandro Bohorquez |
+| whitte | ja.blanco@sumz.co | white, Jorge Antonio Blanco |
+| Nicolás | n.ibagon@sumz.co | Nicolás Ibagón |
+
+```bash
+npm run seed:access
+```

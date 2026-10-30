@@ -1,20 +1,19 @@
-FROM node:22-bookworm-slim AS build
+FROM node:26-bookworm-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 # Vite no usa better-sqlite3; evita node-gyp en la imagen slim.
 RUN npm ci --ignore-scripts
 COPY . .
 ARG VITE_BASE=/
-ARG VITE_FLIIPA_BOARD_WRITE_KEY=
 ENV VITE_BASE=$VITE_BASE
-ENV VITE_FLIIPA_BOARD_WRITE_KEY=$VITE_FLIIPA_BOARD_WRITE_KEY
 RUN npm run build
 
-FROM node:22-bookworm-slim
+FROM node:26-bookworm-slim
 WORKDIR /app
 ENV NODE_ENV=production
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+# Cloud Run usa Firestore; better-sqlite3 no tiene prebuild en Node 26 (solo dev local).
+RUN npm ci --omit=dev --ignore-scripts
 COPY api ./api
 COPY server ./server
 COPY --from=build /app/dist ./dist

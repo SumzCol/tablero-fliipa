@@ -278,7 +278,8 @@ export const PERSON_ALIASES = [
   // con un nombre, a veces con el otro) y corresponden a "Ale Suárez" en
   // Kaneo, así que ambas formas necesitan resolver al mismo alias.
   { nick: "Aleja", patterns: ["aleja", "alejandra", "ale suarez"] },
-  { nick: "William", patterns: ["william"] },
+  { nick: "William", patterns: ["william", "bohorquez", "alejandro bohorquez"] },
+  { nick: "whitte", patterns: ["whitte", "white", "jorge antonio blanco", "ja blanco"] },
   { nick: "Ivan", patterns: ["oscar ivan", "briceno"] },
 ];
 

@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { auditMigration, buildMigrationPackage, cleanupMigratedInitiatives, isKaneoBrowserBlocked, listProjects, migrateToKaneo } from "./kaneo";
+import { auditMigration, buildMigrationPackage, cleanupMigratedInitiatives, isKaneoBrowserBlocked, listProjects, migrateToKaneo } from "@/integrations/kaneo";
 
 const SETTINGS_KEY = "fliipa-kanban:kaneo-settings";
 

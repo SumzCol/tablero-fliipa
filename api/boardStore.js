@@ -1,8 +1,6 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { readSQLiteBoard, writeSQLiteBoard } from "./sqliteBoard.js";
-
 const GIST_ID = process.env.GIST_ID;
 const TOKEN = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
 const FILE_PATH = process.env.BOARD_FILE || path.resolve("data/board.json");
@@ -141,7 +139,10 @@ export async function readBoardBlob() {
   const kind = resolveBoardStoreKind();
   if (kind === "firestore") return readFirestoreBoard();
   if (kind === "gist") return readGist();
-  if (kind === "sqlite") return readSQLiteBoard();
+  if (kind === "sqlite") {
+    const { readSQLiteBoard } = await import("./sqliteBoard.js");
+    return readSQLiteBoard();
+  }
   return readFileBoard();
 }
 
@@ -149,7 +150,10 @@ export async function writeBoardBlob(data) {
   const kind = resolveBoardStoreKind();
   if (kind === "firestore") return writeFirestoreBoard(data);
   if (kind === "gist") return writeGist(data);
-  if (kind === "sqlite") return writeSQLiteBoard(data);
+  if (kind === "sqlite") {
+    const { writeSQLiteBoard } = await import("./sqliteBoard.js");
+    return writeSQLiteBoard(data);
+  }
   writeFileBoard(data);
 }
 

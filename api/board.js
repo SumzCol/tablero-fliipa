@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { assertCanRead, assertCanWrite, writeKeyAllowed } from "./boardAuth.js";
 import {
   boardStoreConfigError,
   readBoardBlob,
@@ -54,7 +55,10 @@ function queryOf(req) {
 function applyCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,PUT,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, If-None-Match");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Accept, If-None-Match, Authorization, X-Fliipa-Board-Key"
+  );
   res.setHeader("Access-Control-Expose-Headers", "ETag");
 }
 
@@ -90,13 +94,6 @@ function readBody(req) {
   });
 }
 
-function writeKeyAllowed(req) {
-  const required = process.env.BOARD_WRITE_KEY || "";
-  if (!required) return true;
-  const got = header(req, "x-fliipa-board-key");
-  return got === required;
-}
-
 export default async function handler(req, res) {
   applyCors(res);
 
@@ -120,6 +117,7 @@ export default async function handler(req, res) {
         return;
       }
 
+      await assertCanRead(req);
       const data = await readBoardBlob();
       if (query.file) {
         const id = String(query.file);
@@ -149,11 +147,13 @@ export default async function handler(req, res) {
     }
 
     if (req.method === "PUT") {
-      if (!writeKeyAllowed(req)) {
-        json(res, 401, { error: "No autorizado para escribir" });
+      const incoming = await readBody(req);
+      try {
+        await assertCanWrite(req, incoming);
+      } catch (e) {
+        json(res, e.status || 401, { error: e.message || "No autorizado" });
         return;
       }
-      const incoming = await readBody(req);
       const current = await readBoardBlob();
       const merged = {
         ...(current && typeof current === "object" ? current : {}),

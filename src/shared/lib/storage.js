@@ -1,9 +1,69 @@
 const API = `${import.meta.env.BASE_URL || "/"}api/board`.replace(/\/{2,}/g, "/");
 const BOARD_WRITE_KEY = (import.meta.env.VITE_FLIIPA_BOARD_WRITE_KEY || "").trim();
 
-function boardWriteHeaders(extra) {
+let authTokenProvider = async () => "";
+let accessGate = async () => true;
+/** @type {(message?: string) => Promise<void>} */
+let authFailureHandler = async () => {};
+
+export function registerBoardAuthTokenProvider(fn) {
+  authTokenProvider = typeof fn === "function" ? fn : async () => "";
+}
+
+export function registerBoardAccessGate(fn) {
+  accessGate = typeof fn === "function" ? fn : async () => true;
+}
+
+export function registerBoardAuthFailureHandler(fn) {
+  authFailureHandler = typeof fn === "function" ? fn : async () => {};
+}
+
+async function assertBoardAccess() {
+  if (!isHostedBoardWithApi()) return;
+  const ok = await accessGate();
+  if (!ok) {
+    const err = new Error("AUTH_REQUIRED");
+    err.code = "AUTH_REQUIRED";
+    throw err;
+  }
+}
+
+async function readApiErrorMessage(res) {
+  try {
+    const body = await res.clone().json();
+    if (body && typeof body.error === "string" && body.error.trim()) return body.error.trim();
+  } catch {
+    /* ignore */
+  }
+  return "";
+}
+
+async function handleAuthHttpStatus(res) {
+  const status = res.status;
+  if (status !== 401 && status !== 403) return;
+  const msg = await readApiErrorMessage(res);
+  if (status === 403) {
+    const err = new Error(msg || "No tienes permiso para esta acción");
+    err.code = "BOARD_FORBIDDEN";
+    throw err;
+  }
+  await authFailureHandler(
+    msg || "Sesión inválida o expirada. Inicia sesión de nuevo."
+  );
+  const err = new Error("AUTH_REQUIRED");
+  err.code = "AUTH_REQUIRED";
+  throw err;
+}
+
+async function apiAuthHeaders(extra) {
   const headers = { ...(extra || {}) };
   if (BOARD_WRITE_KEY) headers["X-Fliipa-Board-Key"] = BOARD_WRITE_KEY;
+  try {
+    const token = await authTokenProvider();
+    if (token) headers.Authorization = `Bearer ${token}`;
+  } catch (e) {
+    /* sin sesión */
+  }
   return headers;
 }
 const BOX = "https://extendsclass.com/api/json-storage/bin";
@@ -151,8 +211,9 @@ async function ensureMode() {
 }
 
 async function fetchBoardFromApi() {
+  await assertBoardAccess();
   const stamp = cacheStamp;
-  const headers = { Accept: "application/json" };
+  const headers = await apiAuthHeaders({ Accept: "application/json" });
   if (boardEtag) headers["If-None-Match"] = boardEtag;
   const res = await fetch(API, { headers, cache: "no-store" });
   if (stamp !== cacheStamp) return cache;
@@ -160,6 +221,7 @@ async function fetchBoardFromApi() {
     fetchedAt = Date.now();
     return cache;
   }
+  await handleAuthHttpStatus(res);
   if (!res.ok) throw new Error("No se pudo leer el tablero compartido");
   const nextEtag = res.headers.get("etag");
   if (nextEtag) boardEtag = nextEtag;
@@ -196,6 +258,7 @@ async function loadBoard() {
 
 async function fetchBoard() {
   await ensureMode();
+  if (mode === "api") await assertBoardAccess();
   if (mode === "local") return cache;
   if (inflight) return inflight;
   if (Date.now() - fetchedAt < BOARD_FRESH_MS) return cache;
@@ -217,16 +280,18 @@ async function putBoard(data) {
   await ensureMode();
   try {
     if (mode === "api") {
+      await assertBoardAccess();
       invalidateBoardCache();
       const res = await fetch(API, {
         method: "PUT",
-        headers: boardWriteHeaders({
+        headers: await apiAuthHeaders({
           "Content-Type": "application/json",
           Accept: "application/json",
         }),
         body: JSON.stringify(data),
         cache: "no-store",
       });
+      await handleAuthHttpStatus(res);
       if (!res.ok) throw new Error("No se pudo guardar el tablero compartido");
     } else if (mode !== "local") {
       const id = await writeBox(data);
@@ -320,6 +385,7 @@ export function installStorage() {
         if (all[key] == null || all[key] === "") return null;
         return { value: typeof all[key] === "string" ? all[key] : JSON.stringify(all[key]) };
       } catch (e) {
+        if (isHostedBoardWithApi() || e?.code === "AUTH_REQUIRED") throw e;
         try {
           const raw = localStorage.getItem("fliipa-kanban:cache");
           const all = raw ? JSON.parse(raw) : {};

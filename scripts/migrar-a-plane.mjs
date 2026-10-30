@@ -13,7 +13,7 @@
  *    PLANE_BASE_URL  (opcional, default https://api.plane.so)
  */
 import { readFile } from "node:fs/promises";
-import { migrateToPlane } from "../src/plane.js";
+import { migrateToPlane } from "../src/integrations/plane.js";
 
 const file = process.argv[2];
 if (!file) {

@@ -25,7 +25,9 @@ const probe = await fetch(`${api}?probe=1`, { headers: { Accept: "application/js
 const probeJson = await probe.json();
 console.log("probe", probe.status, probeJson);
 
-const boardRes = await fetch(api, { headers: { Accept: "application/json" } });
+const readHeaders = { Accept: "application/json" };
+if (writeKey) readHeaders["X-Fliipa-Board-Key"] = writeKey;
+const boardRes = await fetch(api, { headers: readHeaders });
 const board = await boardRes.json();
 if (board.error) {
   console.error("GET board FAIL", board.error);

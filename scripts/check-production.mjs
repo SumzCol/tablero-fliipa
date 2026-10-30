@@ -19,8 +19,8 @@ import {
   auditMigration,
   resolveTaskParentId,
   DEFAULT_PLANE_BASE,
-} from "../src/plane.js";
-import { csvToBoardSnapshot, mergeImportedInitiatives, parseImportedBoard } from "../src/importLegacy.js";
+} from "../src/integrations/plane.js";
+import { csvToBoardSnapshot, mergeImportedInitiatives, parseImportedBoard } from "../src/shared/lib/importLegacy.js";
 
 let failed = 0;
 function assert(name, cond, detail) {
